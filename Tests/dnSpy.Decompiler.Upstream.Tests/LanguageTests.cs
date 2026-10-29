@@ -53,6 +53,20 @@ namespace dnSpy.Decompiler.Upstream.Tests {
 		static IEnumerable<WrittenSpan> Spans(CapturingDecompilerOutput output, string text) => output.Spans.Where(a => a.Text == text);
 
 		[Fact]
+		public void AutoPropertyAccessors_HaveDebugInfo() {
+			var module = TestCompiler.Compile("P1", "public class C { public int X { get; set; } public string Name { get; init; } = \"\"; public static int S { get; private set; } }").Load();
+			var output = LanguageRunner.Decompile(LanguageRunner.Create(), module.Find("C", false));
+			foreach (var (name, accessor) in new[] { ("get_X", "get;"), ("set_X", "set;"), ("get_Name", "get;"), ("set_Name", "init;"), ("set_S", "private set;") }) {
+				var info = Assert.Single(output.DebugInfos, i => i.Method.Name == name);
+				var statement = Assert.Single(info.Statements);
+				Assert.Equal(accessor, output.Text.Substring(statement.TextSpan.Start, statement.TextSpan.Length));
+				Assert.Equal(0u, statement.ILSpan.Start);
+				Assert.Equal((uint)info.Method.Body.GetCodeSize(), statement.ILSpan.End);
+				Assert.Empty(DebugInfoValidator.Validate(info, output.Text, null).Errors);
+			}
+		}
+
+		[Fact]
 		public void Type_IsColoredLikeDnSpysOtherDecompilers() {
 			var module = TestCompiler.Compile("Members", TestPrograms.Members).Load();
 			var output = LanguageRunner.Decompile(LanguageRunner.Create(), Find(module, "Container`1"));

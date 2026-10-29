@@ -160,6 +160,16 @@ namespace dnSpy.Decompiler.Upstream.Tests.Infrastructure {
 				}
 			}
 
+			// The expression evaluator looks up locals by name in the scopes that contain the IL offset: two locals
+			// with the same name in one scope make a name ambiguous (Watch/hover could show the wrong one)
+			foreach (var scope in GetScopes(info.Scope)) {
+				foreach (var g in scope.Locals.Where(l => !string.IsNullOrEmpty(l.Name)).GroupBy(l => l.Name)) {
+					var slots = g.Select(l => l.Local?.Index.ToString() ?? l.HoistedField?.Name.String ?? "?").Distinct().ToArray();
+					if (slots.Length > 1)
+						report.Errors.Add($"Local name '{g.Key}' is used by {slots.Length} different locals ({string.Join(", ", slots)}) in one scope");
+				}
+			}
+
 			foreach (var p in info.Parameters) {
 				var method = p.Parameter.Method;
 				if (method != info.Method && method != info.KickoffMethod)
@@ -238,6 +248,15 @@ namespace dnSpy.Decompiler.Upstream.Tests.Infrastructure {
 					}
 				}
 
+				// The expression evaluator finds captured variables through the display class local's name
+				foreach (var kv in pdb.LocalNames) {
+					if (!kv.Value.StartsWith("CS$<>8__locals", System.StringComparison.Ordinal))
+						continue;
+					var ours = GetLocals(info.Scope).FirstOrDefault(l => l.Local?.Index == kv.Key);
+					if (ours is null || !ours.Name.StartsWith("CS$<>8__locals", System.StringComparison.Ordinal))
+						report.Errors.Add($"Display class local V_{kv.Key} is {(ours is null ? "missing" : $"named '{ours.Name}'")}: the expression evaluator can't find the captured variables");
+				}
+
 				var mappedSlots = new HashSet<int>(GetLocals(info.Scope).Where(l => l.Local is not null).Select(l => l.Local!.Index));
 				report.PdbLocals = pdb.LocalNames.Count;
 				report.PdbLocalsMapped = pdb.LocalNames.Keys.Count(slot => mappedSlots.Contains(slot));
@@ -267,7 +286,9 @@ namespace dnSpy.Decompiler.Upstream.Tests.Infrastructure {
 			// The condition and iterator of a for loop are separate statements
 			int lineStart = text.LastIndexOf('\n', System.Math.Max(0, span.Start - 1)) + 1;
 			var line = text.Substring(lineStart, span.Start - lineStart).TrimStart();
-			if (line.StartsWith("for ", System.StringComparison.Ordinal) || line.StartsWith("for(", System.StringComparison.Ordinal))
+			if (line.StartsWith("for ", System.StringComparison.Ordinal) || line.StartsWith("for(", System.StringComparison.Ordinal) ||
+				line.StartsWith("foreach ", System.StringComparison.Ordinal) || line.StartsWith("foreach(", System.StringComparison.Ordinal) ||
+				line.StartsWith("await foreach ", System.StringComparison.Ordinal))
 				return StatementKind.ControlFlow;
 			return StatementKind.Simple;
 		}
@@ -350,6 +371,14 @@ namespace dnSpy.Decompiler.Upstream.Tests.Infrastructure {
 					set.Add(m.Value);
 			}
 			return set;
+		}
+
+		static IEnumerable<MethodDebugScope> GetScopes(MethodDebugScope scope) {
+			yield return scope;
+			foreach (var child in scope.Scopes) {
+				foreach (var s in GetScopes(child))
+					yield return s;
+			}
 		}
 
 		static IEnumerable<SourceLocal> GetLocals(MethodDebugScope scope) {

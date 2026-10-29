@@ -123,11 +123,16 @@ namespace dnSpy.Decompiler.Upstream.CorpusRunner {
 				upstream = new UpstreamCSharpDecompiler(cache, new DecompilerSettings(LanguageVersion.Latest) { ThrowOnAssemblyResolveErrors = false });
 			}
 
+			// A failure of the statement shaper only loses its fixes in dnSpy: count it as an error here
+			var shaperErrors = new System.Collections.Concurrent.ConcurrentQueue<string>();
+			dnSpy.Decompiler.Upstream.DebugInfo.StatementShaper.OnError = (method, ex) => shaperErrors.Enqueue($"{SafeName(method)}: statement shaper failed: {ex.GetType().Name}: {ex.Message}");
+
 			foreach (var type in types) {
 				result.Types++;
 				var sw = Stopwatch.StartNew();
 				IReadOnlyList<string> repairs = Array.Empty<string>();
 				var outputErrors = new List<string>();
+				while (shaperErrors.TryDequeue(out _)) { }
 				var outcome = RunOnThread<(string text, IReadOnlyList<MethodDebugInfo> infos)>(stackMB, typeTimeout, token => {
 					if (language is not null) {
 						var output = new CapturingDecompilerOutput();
@@ -151,6 +156,7 @@ namespace dnSpy.Decompiler.Upstream.CorpusRunner {
 				switch (outcome.kind) {
 				case OutcomeKind.Ok:
 					result.Ok++;
+					outputErrors.AddRange(shaperErrors);
 					result.DebugInfoErrors += outputErrors.Count;
 					foreach (var e in outputErrors.Take(1)) {
 						if (result.DebugInfoErrorSamples.Count < 5)

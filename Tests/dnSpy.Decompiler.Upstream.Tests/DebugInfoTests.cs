@@ -206,6 +206,32 @@ namespace dnSpy.Decompiler.Upstream.Tests {
 			Assert.Empty(infos.SelectMany(i => DebugInfoValidator.Validate(i, text, null).Errors));
 		}
 
+		/// <summary>
+		/// Optimized real-world code (Newtonsoft.Json 13.0.4, netstandard2.0): upstream's statements had 93 breakpoint
+		/// problems (a condition's tail or an expression's end attributed to another statement) in the whole
+		/// assembly; the statement shaper leaves 8 (values kept on the stack across statements)
+		/// </summary>
+		[Fact]
+		public void RealWorld_StatementsAreWellFormed() {
+			var path = System.IO.Path.Combine(AppContext.BaseDirectory, "Samples", "netstandard2.0", "Newtonsoft.Json.dll");
+			var module = ModuleDefMD.Load(path, TestCompiler.CreateModuleContext());
+			var language = LanguageRunner.Create();
+			var errors = new List<string>();
+			int statements = 0;
+			foreach (var name in new[] { "Newtonsoft.Json.JsonConvert", "Newtonsoft.Json.JsonSerializer", "Newtonsoft.Json.JsonReader", "Newtonsoft.Json.JsonWriter", "Newtonsoft.Json.Utilities.EnumUtils" }) {
+				var (text, infos) = LanguageRunner.DecompileType(language, module.Find(name, false));
+				foreach (var info in infos) {
+					statements += info.Statements.Length;
+					errors.AddRange(DebugInfoValidator.Validate(info, text, null).Errors.Select(e => $"{info.Method.FullName}: {e}"));
+				}
+			}
+			foreach (var e in errors)
+				log.WriteLine(e);
+			log.WriteLine($"{errors.Count} errors in {statements} statements");
+			Assert.True(statements > 1000);
+			Assert.True(errors.Count <= 3, $"{errors.Count} errors");
+		}
+
 		static double Ratio(int a, int b) => b == 0 ? 1 : (double)a / b;
 
 		static string Percent(int a, int b) => b == 0 ? "n/a" : $"{100.0 * a / b:0.0}% ({a}/{b})";

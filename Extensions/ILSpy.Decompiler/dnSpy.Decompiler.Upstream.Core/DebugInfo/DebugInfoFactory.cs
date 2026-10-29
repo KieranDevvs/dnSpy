@@ -54,7 +54,37 @@ namespace dnSpy.Decompiler.Upstream.DebugInfo {
 				if (info is not null)
 					result.Add(info);
 			}
+			AddAutoAccessors(syntaxTree, output, cache, decompilerSettingsVersion, result);
 			return result;
+		}
+
+		/// <summary>
+		/// Upstream has no sequence points for auto property accessors (get; set; init;), the compiler maps their
+		/// whole body to the accessor: a breakpoint on 'get;' stops in the getter.
+		/// </summary>
+		static void AddAutoAccessors(SyntaxTree syntaxTree, ILocationMapper output, ModuleBridgeCache cache, int decompilerSettingsVersion, List<MethodDebugInfo> result) {
+			var methods = new HashSet<MethodDef>(result.Select(a => a.Method));
+			foreach (var accessor in syntaxTree.Descendants.OfType<Accessor>()) {
+				if (accessor.Body is not null)
+					continue;
+				if (accessor.StartLocation.IsEmpty || accessor.EndLocation.IsEmpty || accessor.GetSymbol() is not UpstreamMethod upstreamMethod)
+					continue;
+				if (cache.ToDnlib(upstreamMethod) is not MethodDef method || method.Body is not CilBody body || body.Instructions.Count == 0 || !methods.Add(method))
+					continue;
+				int start = output.ToOffset(accessor.StartLocation.Line, accessor.StartLocation.Column);
+				int end = output.ToOffset(accessor.EndLocation.Line, accessor.EndLocation.Column);
+				if (end <= start)
+					continue;
+				var codeSize = (uint)body.GetCodeSize();
+				var builder = new MethodDebugInfoBuilder(decompilerSettingsVersion, StateMachineKind.None, method, null) {
+					CompilerName = null,
+					StartPosition = start,
+					EndPosition = end,
+				};
+				builder.Add(new SourceStatement(ILSpan.FromBounds(0, codeSize), TextSpan.FromBounds(start, end)));
+				builder.Scope.Span = ILSpan.FromBounds(0, codeSize);
+				result.Add(builder.Create());
+			}
 		}
 
 		static MethodDebugInfo? Create(ILFunction function, List<UpstreamSequencePoint> points, ILocationMapper output,
@@ -127,7 +157,8 @@ namespace dnSpy.Decompiler.Upstream.DebugInfo {
 			// scope is method-wide, so keep one name per slot like upstream's own PDB writer does.
 			var seenSlots = new HashSet<Local>();
 			var seenFields = new HashSet<FieldDef>();
-			foreach (var v in function.Variables) {
+			// The variables the code uses first: their names win if upstream split a slot
+			foreach (var v in function.Variables.OrderBy(a => variables.IsUsedInText(a) ? 0 : 1)) {
 				if (v.Kind == VariableKind.Parameter || v.Name is null)
 					continue;
 				if (v.StateMachineField is not null) {
@@ -135,9 +166,25 @@ namespace dnSpy.Decompiler.Upstream.DebugInfo {
 						yield return variables.GetLocal(v);
 					continue;
 				}
-				if (variables.GetILLocal(v) is Local local && seenSlots.Add(local))
+				if (variables.GetILLocal(v) is not Local local || !seenSlots.Add(local))
+					continue;
+				if (variables.IsUsedInText(v))
 					yield return variables.GetLocal(v);
+				else if (IsDisplayClass(local.Type)) {
+					// Upstream shows the captured variables as locals. The expression evaluator finds them in the
+					// display class if its local has the C# compiler's name.
+					yield return new SourceLocal(local, "CS$<>8__locals" + local.Index.ToString(System.Globalization.CultureInfo.InvariantCulture), local.Type, SourceVariableFlags.None);
+				}
+				// Else it's a temporary the code doesn't show (e.g. an awaiter): the Locals window would show 'V_3'
 			}
+		}
+
+		static bool IsDisplayClass(TypeSig? type) {
+			type = type?.RemovePinnedAndModifiers();
+			if (type is GenericInstSig genericInst)
+				type = genericInst.GenericType;
+			var name = type?.ToTypeDefOrRef()?.Name?.String;
+			return name is not null && (name.StartsWith("<>c__DisplayClass", StringComparison.Ordinal) || name.StartsWith("_Closure$__", StringComparison.Ordinal));
 		}
 
 		static SourceParameter[] GetParameters(ILFunction function, MethodDef method, ModuleBridgeCache cache) {

@@ -85,6 +85,11 @@ namespace dnSpy.Decompiler.Upstream.DebugInfo {
 	/// </list>
 	/// </remarks>
 	static class StatementShaper {
+		/// <summary>
+		/// Tests: called when shaping a method failed (its statements are used unchanged)
+		/// </summary>
+		internal static Action<MethodDef, Exception>? OnError;
+
 		public static List<SourceStatement> Shape(List<SourceStatement> statements, MethodDef method, ShapeContext context) {
 			if (statements.Count == 0)
 				return statements;
@@ -99,6 +104,7 @@ namespace dnSpy.Decompiler.Upstream.DebugInfo {
 			}
 			catch (Exception ex) when (ex is not OutOfMemoryException) {
 				// Never fail the decompilation because of invalid IL: keep upstream's statements
+				OnError?.Invoke(method, ex);
 				return statements;
 			}
 		}
@@ -126,12 +132,17 @@ namespace dnSpy.Decompiler.Upstream.DebugInfo {
 			// uses a compiler temporary the statement stored
 			for (int si = 0; si < spans.Count; si++) {
 				var (start, end, text) = spans[si];
+				// The stack can hold values of earlier statements (optimized code keeps a variable on the stack)
+				int baseDepth = flow.StackDepth[start];
 				int newEnd = end;
+				bool continues = end < count && baseDepth >= 0 && flow.StackDepth[end] > baseDepth && ConsumesStack(flow, end, count);
 				while (newEnd < count && owner[newEnd] < 0 && flow.Block[newEnd] == flow.Block[newEnd - 1]) {
-					if (flow.StackDepth[newEnd] > 0) {
+					if (continues && flow.StackDepth[newEnd] > baseDepth) {
 						owner[newEnd++] = si;
 						continue;
 					}
+					if (flow.StackDepth[newEnd] != baseDepth)
+						break;
 					int runEnd = GetTemporaryRunEnd(flow, owner, start, newEnd, context.VisibleLocals);
 					if (runEnd <= newEnd)
 						break;
@@ -181,6 +192,15 @@ namespace dnSpy.Decompiler.Upstream.DebugInfo {
 					RebuildOwners(spans, owner);
 			}
 
+			// Pieces are entered at their start only. Splitting reveals more continuations (e.g. the arm of a
+			// conditional expression that another statement got), so do it twice.
+			for (int pass = 0; pass < 2; pass++) {
+				ReclaimExpressionContinuations(flow, spans, owner, context.ClosingBrace);
+				spans = SplitAtEntries(flow, spans);
+				RebuildOwners(spans, owner);
+				ReassignPiecesOfOtherStatements(flow, spans, owner);
+			}
+
 			// Conditions' tails attributed to the next statement
 			for (int si = 0; si < spans.Count; si++) {
 				var (start, end, text) = spans[si];
@@ -198,8 +218,19 @@ namespace dnSpy.Decompiler.Upstream.DebugInfo {
 							cut = i + 1;
 					}
 				}
-				if (cut < 0 || cut >= end)
+				if (cut < 0)
 					continue;
+				// The whole piece is the condition: only if the statement has another piece (its own code)
+				if (cut >= end) {
+					bool hasOtherSpan = false;
+					for (int other = 0; other < spans.Count; other++) {
+						if (other != si && spans[other].text == text && spans[other].end > spans[other].start)
+							hasOtherSpan = true;
+					}
+					if (!hasOtherSpan)
+						continue;
+					cut = end;
+				}
 				// The previous statement gets it if the condition is its own
 				int prev = start > 0 ? owner[start - 1] : -1;
 				bool toPrevious = prev >= 0 && spans[prev].end == start && getKind(spans[prev].text) == StatementKind.Other && flow.Block[start - 1] == flow.Block[start];
@@ -207,21 +238,206 @@ namespace dnSpy.Decompiler.Upstream.DebugInfo {
 					owner[i] = toPrevious ? prev : -1;
 				if (toPrevious)
 					spans[prev] = (spans[prev].start, cut, spans[prev].text);
+				// (An empty span is removed below)
 				spans[si] = (cut, end, text);
 			}
+			spans.RemoveAll(a => a.end <= a.start);
+			// The moves above can merge pieces: each IL span must still be entered at its start only
+			RebuildOwners(spans, owner);
+			// (Dropping a piece can make a branch from it come from outside: repeat until nothing changes)
+			for (int i = 0; i < 4; i++) {
+				int before = spans.Count;
+				spans = SplitAtEntries(flow, spans);
+				if (spans.Count == before)
+					break;
+			}
 
-			// Instructions that belong to statements with the same text (the same statement in the source)
-			var textOf = new TextSpan?[count];
+			var result = new List<SourceStatement>(spans.Count);
+			foreach (var (start, end, text) in spans)
+				result.Add(new SourceStatement(flow.ToILSpan(start, end), text));
+			return result;
+		}
+
+		/// <summary>
+		/// Upstream sometimes attributes the end of an expression to another statement, e.g. the call and the null
+		/// path of 'Error?.Invoke(this, e);' or the store of 'x = v ?? d;' to the method's closing brace (its implicit
+		/// return gets the IL that transforms removed). IL that continues an expression (the stack isn't empty) goes
+		/// back to the statement it's reached from. The closing brace's instructions between two pieces of a
+		/// statement go to the statement too, so it's one span like the compiler's (one breakpoint location).
+		/// </summary>
+		static void ReclaimExpressionContinuations(MethodFlow flow, List<(int start, int end, TextSpan text)> spans, int[] owner, TextSpan? brace) {
+			bool changed = false;
+			for (int si = 0; si < spans.Count; si++) {
+				var (start, end, text) = spans[si];
+				if (flow.StackDepth[start] <= 0)
+					continue;
+				// The statement it continues: all predecessors that belong to a statement belong to the same one
+				int? statement = null;
+				bool ok = true;
+				foreach (int pred in Predecessors(flow, start)) {
+					int o = owner[pred];
+					if (o < 0)
+						continue;
+					if (spans[o].text == text || spans[o].text == brace || (statement is int s && spans[s].text != spans[o].text))
+						ok = false;
+					statement = o;
+				}
+				if (!ok || statement is not int target)
+					continue;
+				// It continues the expression only if it uses the values on the stack (else they're values that
+				// optimized code keeps on the stack across statements)
+				int targetBase = flow.StackDepth[spans[target].start];
+				if (targetBase < 0 || flow.StackDepth[start] <= targetBase || !ConsumesStack(flow, start, end))
+					continue;
+				int reclaimEnd = start;
+				while (reclaimEnd < end && (reclaimEnd == start || flow.StackDepth[reclaimEnd] > targetBase))
+					reclaimEnd++;
+				spans.Add((start, reclaimEnd, spans[target].text));
+				spans[si] = (reclaimEnd, end, text);
+				changed = true;
+			}
+			if (!changed)
+				return;
+			spans.RemoveAll(a => a.end <= a.start);
+			RebuildOwners(spans, owner);
+
+			// Fill the gaps between two pieces of a statement that only contain the closing brace's IL entered from
+			// the first piece (the null path's ret of 'Error?.Invoke(this, e);')
+			if (brace is TextSpan braceText) {
+				for (int si = 0; si < spans.Count; si++) {
+					var text = spans[si].text;
+					if (text == braceText)
+						continue;
+					int gapStart = spans[si].end;
+					int next = spans.FindIndex(a => a.text == text && a.start > gapStart);
+					if (next < 0)
+						continue;
+					int gapEnd = spans[next].start;
+					bool fill = gapEnd > gapStart && gapEnd - gapStart <= 4;
+					for (int i = gapStart; fill && i < gapEnd; i++) {
+						if (owner[i] < 0 || spans[owner[i]].text != braceText)
+							fill = false;
+						else if (i != gapStart && flow.BranchSources(i).Any())
+							fill = false;
+						else if (i == gapStart && flow.BranchSources(i).Any(b => owner[b] < 0 || spans[owner[b]].text != text))
+							fill = false;
+					}
+					if (!fill)
+						continue;
+					for (int i = 0; i < spans.Count; i++) {
+						var a = spans[i];
+						if (a.text == braceText && a.start < gapEnd && a.end > gapStart)
+							spans[i] = a.start < gapStart ? (a.start, gapStart, a.text) : (gapEnd, a.end, a.text);
+					}
+					spans.Add((gapStart, gapEnd, text));
+					spans.RemoveAll(a => a.end <= a.start);
+					RebuildOwners(spans, owner);
+				}
+			}
+
+			// Merge adjacent pieces of a statement, unless the second one is entered from elsewhere
+			spans.Sort((a, b) => a.start.CompareTo(b.start));
+			RebuildOwners(spans, owner);
+			for (int i = spans.Count - 1; i > 0; i--) {
+				var (aStart, aEnd, aText) = spans[i - 1];
+				var (bStart, bEnd, bText) = spans[i];
+				if (aText != bText || aEnd != bStart || flow.IsHandlerStart[bStart])
+					continue;
+				if (flow.BranchSources(bStart).Any(src => owner[src] < 0 || spans[owner[src]].text != bText))
+					continue;
+				spans[i - 1] = (aStart, bEnd, aText);
+				spans.RemoveAt(i);
+			}
+			RebuildOwners(spans, owner);
+		}
+
+		/// <summary>
+		/// A piece of a statement that's only entered from another statement's code belongs to that statement, e.g.
+		/// the arm of 'x = c ? a : b;' that upstream attributed to the statement after it (at the arms' join point):
+		/// the breakpoint on the next statement fired only when that arm ran. The statement's last piece (its own
+		/// code) is never moved.
+		/// </summary>
+		static void ReassignPiecesOfOtherStatements(MethodFlow flow, List<(int start, int end, TextSpan text)> spans, int[] owner) {
+			bool changed = false;
+			for (int si = 0; si < spans.Count; si++) {
+				var (start, end, text) = spans[si];
+				int last = -1;
+				for (int i = 0; i < spans.Count; i++) {
+					if (spans[i].text == text && (last < 0 || spans[i].start > spans[last].start))
+						last = i;
+				}
+				if (last == si || flow.IsHandlerStart[start])
+					continue;
+				int? from = null;
+				bool ok = true;
+				foreach (int pred in Predecessors(flow, start)) {
+					int o = owner[pred];
+					if (o < 0 || spans[o].text == text || (from is int f && spans[f].text != spans[o].text)) {
+						ok = false;
+						break;
+					}
+					from = o;
+				}
+				if (!ok || from is not int source)
+					continue;
+				spans[si] = (start, end, spans[source].text);
+				changed = true;
+			}
+			if (changed)
+				RebuildOwners(spans, owner);
+		}
+
+		/// <summary>
+		/// Does the code at <paramref name="start"/> (until it branches or the stack is back to where it was) pop a
+		/// value that was on the stack before it started?
+		/// </summary>
+		static bool ConsumesStack(MethodFlow flow, int start, int end) {
+			int startDepth = flow.StackDepth[start];
+			if (startDepth <= 0)
+				return false;
+			for (int i = start; i < end && i < flow.Count; i++) {
+				int depth = flow.StackDepth[i];
+				if (depth < 0)
+					return false;
+				var instr = flow.Instructions[i];
+				instr.CalculateStackUsage(flow.HasReturnValue, out _, out int pops);
+				if (pops == -1 || depth - pops < startDepth)
+					return true;
+				switch (instr.OpCode.FlowControl) {
+				case FlowControl.Branch:
+				case FlowControl.Cond_Branch:
+				case FlowControl.Return:
+				case FlowControl.Throw:
+					return false;
+				}
+			}
+			return false;
+		}
+
+		static IEnumerable<int> Predecessors(MethodFlow flow, int index) {
+			if (index > 0) {
+				var prev = flow.Instructions[index - 1].OpCode.FlowControl;
+				if (prev != FlowControl.Branch && prev != FlowControl.Return && prev != FlowControl.Throw && flow.Instructions[index - 1].OpCode.Code != Code.Endfinally && flow.Instructions[index - 1].OpCode.Code != Code.Endfilter)
+					yield return index - 1;
+			}
+			foreach (int source in flow.BranchSources(index))
+				yield return source;
+		}
+
+		/// <summary>
+		/// Splits the statements at their extra entry points, keeping the pieces with the statement's own code
+		/// </summary>
+		static List<(int start, int end, TextSpan text)> SplitAtEntries(MethodFlow flow, List<(int start, int end, TextSpan text)> spans) {
+			var textOf = new TextSpan?[flow.Count];
 			foreach (var (start, end, text) in spans) {
 				for (int i = start; i < end; i++)
 					textOf[i] = text;
 			}
-
-			var result = new List<SourceStatement>(spans.Count);
+			var result = new List<(int start, int end, TextSpan text)>(spans.Count);
 			foreach (var (start, end, text) in spans) {
 				var pieces = Split(flow, start, end, text, textOf);
 				if (pieces.Count == 1) {
-					result.Add(new SourceStatement(flow.ToILSpan(start, end), text));
+					result.Add((start, end, text));
 					continue;
 				}
 				// The statement's own code is the last piece (upstream attributes leftover IL to the next statement)
@@ -231,7 +447,7 @@ namespace dnSpy.Decompiler.Upstream.DebugInfo {
 				if (withEffect.Count != 0)
 					kept = withEffect;
 				foreach (var (pStart, pEnd) in kept)
-					result.Add(new SourceStatement(flow.ToILSpan(pStart, pEnd), text));
+					result.Add((pStart, pEnd, text));
 			}
 			return result;
 		}
@@ -279,7 +495,7 @@ namespace dnSpy.Decompiler.Upstream.DebugInfo {
 			bool readsTemporary = false;
 			int end = runStart;
 			do {
-				if (owner[end] >= 0 || flow.Block[end] != flow.Block[runStart] || flow.StackDepth[end] < 0)
+				if (owner[end] >= 0 || flow.Block[end] != flow.Block[runStart] || flow.StackDepth[end] < flow.StackDepth[runStart])
 					return runStart;
 				var instr = flow.Instructions[end];
 				if (instr.OpCode.FlowControl != FlowControl.Next && instr.OpCode.FlowControl != FlowControl.Call)
@@ -287,7 +503,7 @@ namespace dnSpy.Decompiler.Upstream.DebugInfo {
 				if ((instr.IsLdloc() || instr.OpCode.Code == Code.Ldloca || instr.OpCode.Code == Code.Ldloca_S) && GetLocalIndex(instr) is int index && stored.Contains(index))
 					readsTemporary = true;
 				end++;
-			} while (end < flow.Count && flow.StackDepth[end] != 0);
+			} while (end < flow.Count && flow.StackDepth[end] != flow.StackDepth[runStart]);
 			return readsTemporary ? end : runStart;
 		}
 
@@ -358,6 +574,7 @@ namespace dnSpy.Decompiler.Upstream.DebugInfo {
 		/// <summary>Innermost exception handling block (try, filter or handler) of each instruction, -1 if none</summary>
 		public int[] Block { get; }
 		public bool[] IsHandlerStart { get; }
+		public bool HasReturnValue { get; }
 
 		/// <summary>true if the instruction is in a catch/finally/fault handler or filter (its innermost block)</summary>
 		public bool IsInHandler(int index) => Block[index] >= 0 && Block[index] % 3 != 0;
@@ -365,7 +582,8 @@ namespace dnSpy.Decompiler.Upstream.DebugInfo {
 		readonly Dictionary<uint, int> indexes;
 		readonly Dictionary<Instruction, int> indexOf;
 
-		MethodFlow(IList<Instruction> instructions, uint[] offsets, int[] stackDepth, int[] block, bool[] isHandlerStart, List<int>?[] branchSources, Dictionary<uint, int> indexes, Dictionary<Instruction, int> indexOf) {
+		MethodFlow(IList<Instruction> instructions, uint[] offsets, int[] stackDepth, int[] block, bool[] isHandlerStart, List<int>?[] branchSources, Dictionary<uint, int> indexes, Dictionary<Instruction, int> indexOf, bool hasReturnValue) {
+			HasReturnValue = hasReturnValue;
 			Instructions = instructions;
 			Offsets = offsets;
 			StackDepth = stackDepth;
@@ -468,7 +686,8 @@ namespace dnSpy.Decompiler.Upstream.DebugInfo {
 			var depth = CalculateStackDepths(method, instrs, indexOf, handlers);
 			if (depth is null)
 				return null;
-			return new MethodFlow(instrs, offsets, depth, block, isHandlerStart, branchSources, indexes, indexOf);
+			bool hasReturnValue = method.MethodSig?.RetType?.RemovePinnedAndModifiers().GetElementType() is ElementType type && type != ElementType.Void;
+			return new MethodFlow(instrs, offsets, depth, block, isHandlerStart, branchSources, indexes, indexOf, hasReturnValue);
 		}
 
 		static void SetBlock(int[] block, int[] blockSize, int start, int end, int id) {
