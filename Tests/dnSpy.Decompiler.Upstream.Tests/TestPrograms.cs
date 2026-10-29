@@ -136,6 +136,26 @@ namespace dnSpy.Decompiler.Upstream.Tests {
 					}
 				}
 
+				// Same shape as Newtonsoft.Json's JsonWriter.InternalWriteEndAsync/AwaitRemaining, where upstream
+				// produced sequence points that start inside an instruction
+				int levels;
+				bool property;
+				Task WriteNullAsync(System.Threading.CancellationToken ct) => Task.CompletedTask;
+				Task WriteEndAsync(int token, System.Threading.CancellationToken ct) => Task.CompletedTask;
+				int Pop() => levels--;
+				void UpdateCurrentState() => property = !property;
+
+				public async Task AwaitRemaining(int levelsToComplete, System.Threading.CancellationToken cancellationToken) {
+					while (levelsToComplete-- > 0) {
+						int token = Pop();
+						if (property) {
+							await WriteNullAsync(cancellationToken).ConfigureAwait(false);
+						}
+						await WriteEndAsync(token, cancellationToken).ConfigureAwait(false);
+						UpdateCurrentState();
+					}
+				}
+
 				public async IAsyncEnumerable<int> Stream(int n) {
 					for (int i = 0; i < n; i++) {
 						await Task.Yield();

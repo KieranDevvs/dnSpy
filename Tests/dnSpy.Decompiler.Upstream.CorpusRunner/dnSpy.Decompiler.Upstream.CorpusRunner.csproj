@@ -1,0 +1,42 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <Import Project="..\..\DnSpyCommon.props" />
+
+  <!--
+    Decompiles a corpus of assemblies (framework, packages, obfuscated samples) with the upstream and the legacy
+    engine and reports failures, crashes, hangs, bridge decisions and debug info errors. Each assembly runs in a
+    child process so a stack overflow (which can't be caught) is recorded instead of ending the run.
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFrameworks>net10.0-windows</TargetFrameworks>
+    <Nullable>enable</Nullable>
+    <SignAssembly>True</SignAssembly>
+    <AssemblyOriginatorKeyFile>..\..\dnSpy.snk</AssemblyOriginatorKeyFile>
+    <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
+    <!-- The legacy decompiler references WPF projects; the code paths used here don't need WPF -->
+    <DisableTransitiveFrameworkReferences>true</DisableTransitiveFrameworkReferences>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="..\dnSpy.Decompiler.Upstream.Tests\Infrastructure\DebugInfoValidator.cs" Link="Shared\DebugInfoValidator.cs" />
+    <Compile Include="..\dnSpy.Decompiler.Upstream.Tests\Infrastructure\PdbGroundTruth.cs" Link="Shared\PdbGroundTruth.cs" />
+    <Compile Include="..\dnSpy.Decompiler.Upstream.Tests\Infrastructure\LegacyDecompiler.cs" Link="Shared\LegacyDecompiler.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\Extensions\ILSpy.Decompiler\dnSpy.Decompiler.Upstream.Core\dnSpy.Decompiler.Upstream.Core.csproj" />
+    <ProjectReference Include="..\..\Extensions\ILSpy.Decompiler\dnSpy.Decompiler.ILSpy.Core\dnSpy.Decompiler.ILSpy.Core.csproj" />
+  </ItemGroup>
+
+  <!-- See dnSpy.Decompiler.Upstream.Tests.csproj -->
+  <Target Name="AliasLegacyDecompiler" AfterTargets="FindReferenceAssembliesForReferences" BeforeTargets="CoreCompile">
+    <ItemGroup>
+      <ReferencePathWithRefAssemblies Condition=" '%(Filename)' == 'ICSharpCode.Decompiler.Legacy' or '%(Filename)' == 'ICSharpCode.NRefactory' or '%(Filename)' == 'ICSharpCode.NRefactory.CSharp' or '%(Filename)' == 'ICSharpCode.NRefactory.VB' ">
+        <Aliases>legacy</Aliases>
+      </ReferencePathWithRefAssemblies>
+    </ItemGroup>
+  </Target>
+
+</Project>

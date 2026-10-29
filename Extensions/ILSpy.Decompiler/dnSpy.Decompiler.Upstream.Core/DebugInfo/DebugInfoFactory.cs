@@ -38,12 +38,13 @@ namespace dnSpy.Decompiler.Upstream.DebugInfo {
 	/// <see cref="MethodDebugInfo"/>, which the debugger uses for breakpoints, stepping and locals.
 	/// </summary>
 	static class DebugInfoFactory {
+		/// <param name="repairs">Gets a description of each upstream sequence point that had to be dropped or fixed</param>
 		public static List<MethodDebugInfo> Create(SyntaxTree syntaxTree, Dictionary<ILFunction, List<UpstreamSequencePoint>> sequencePoints,
-			TrackingTextOutput output, ModuleBridgeCache cache, int decompilerSettingsVersion) {
+			TrackingTextOutput output, ModuleBridgeCache cache, int decompilerSettingsVersion, List<string> repairs) {
 			var methodSpans = GetMethodSpans(syntaxTree, output);
 			var result = new List<MethodDebugInfo>(sequencePoints.Count);
 			foreach (var kv in sequencePoints) {
-				var info = Create(kv.Key, kv.Value, output, cache, methodSpans, decompilerSettingsVersion);
+				var info = Create(kv.Key, kv.Value, output, cache, methodSpans, decompilerSettingsVersion, repairs);
 				if (info is not null)
 					result.Add(info);
 			}
@@ -51,7 +52,7 @@ namespace dnSpy.Decompiler.Upstream.DebugInfo {
 		}
 
 		static MethodDebugInfo? Create(ILFunction function, List<UpstreamSequencePoint> points, TrackingTextOutput output,
-			ModuleBridgeCache cache, Dictionary<UpstreamMethod, (int start, int end)> methodSpans, int decompilerSettingsVersion) {
+			ModuleBridgeCache cache, Dictionary<UpstreamMethod, (int start, int end)> methodSpans, int decompilerSettingsVersion, List<string> repairs) {
 			if (function.Method is null)
 				return null;
 			// IL offsets are offsets in the method whose body was decompiled: MoveNext() for async/iterator methods
@@ -68,6 +69,8 @@ namespace dnSpy.Decompiler.Upstream.DebugInfo {
 				CompilerName = null,
 			};
 
+			var body = bodyMethod.Body;
+			var boundaries = GetInstructionBoundaries(body);
 			foreach (var sp in points) {
 				if (sp.IsHidden || sp.EndOffset <= sp.Offset)
 					continue;
@@ -75,10 +78,25 @@ namespace dnSpy.Decompiler.Upstream.DebugInfo {
 				int end = output.ToOffset(sp.EndLine, sp.EndColumn);
 				if (end < start)
 					continue;
-				builder.Add(new SourceStatement(ILSpan.FromBounds((uint)sp.Offset, (uint)sp.EndOffset), TextSpan.FromBounds(start, end)));
+				uint ilStart = (uint)sp.Offset;
+				uint ilEnd = (uint)sp.EndOffset;
+				if (boundaries is not null) {
+					// Upstream sometimes produces offsets inside an instruction (seen in async MoveNext methods).
+					// Such a statement is attributed to the wrong IL: drop it rather than let a breakpoint on it
+					// stop in other code. The IL is then treated as hidden by the stepper.
+					if (!boundaries.Contains(ilStart)) {
+						repairs.Add($"{bodyMethod.FullName}: dropped statement IL_{ilStart:X4}-IL_{ilEnd:X4} (starts inside an instruction)");
+						continue;
+					}
+					if (!boundaries.Contains(ilEnd)) {
+						uint fixedEnd = boundaries.Where(b => b > ilEnd).DefaultIfEmpty(ilEnd).Min();
+						repairs.Add($"{bodyMethod.FullName}: statement IL_{ilStart:X4}-IL_{ilEnd:X4} ends inside an instruction, end moved to IL_{fixedEnd:X4}");
+						ilEnd = fixedEnd;
+					}
+				}
+				builder.Add(new SourceStatement(ILSpan.FromBounds(ilStart, ilEnd), TextSpan.FromBounds(start, end)));
 			}
 
-			var body = bodyMethod.Body;
 			builder.Scope.Span = ILSpan.FromBounds(0, (uint)(body is null ? function.CodeSize : body.GetCodeSize()));
 			builder.Scope.Locals.AddRange(GetLocals(function, body, cache));
 			builder.Parameters = GetParameters(function, kickoffMethod ?? bodyMethod, cache);
@@ -90,6 +108,23 @@ namespace dnSpy.Decompiler.Upstream.DebugInfo {
 				builder.EndPosition = span.end;
 			}
 			return builder.Create();
+		}
+
+		/// <summary>
+		/// Offsets of all instructions plus the code size. Computed without updating the instructions' offsets,
+		/// the body may be shared with the UI.
+		/// </summary>
+		static HashSet<uint>? GetInstructionBoundaries(CilBody? body) {
+			if (body is null)
+				return null;
+			var set = new HashSet<uint>();
+			uint offset = 0;
+			foreach (var instr in body.Instructions) {
+				set.Add(offset);
+				offset += (uint)instr.GetSize();
+			}
+			set.Add(offset);
+			return set;
 		}
 
 		static IEnumerable<SourceLocal> GetLocals(ILFunction function, CilBody? body, ModuleBridgeCache cache) {

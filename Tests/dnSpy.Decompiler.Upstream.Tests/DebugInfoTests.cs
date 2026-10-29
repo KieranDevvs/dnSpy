@@ -125,10 +125,14 @@ namespace dnSpy.Decompiler.Upstream.Tests {
 
 			var decompiler = TestDecompiler.Create();
 			var source = GetSource(program);
+			var repairs = new List<string>();
 			var upstream = Run("upstream", compiled.Load(), pdb, source, t => {
 				var r = decompiler.DecompileType(t);
+				repairs.AddRange(r.DebugInfoRepairs);
 				return (r.Text, r.MethodDebugInfos);
 			});
+			foreach (var repair in repairs)
+				log.WriteLine("  [upstream] REPAIRED " + repair);
 			var legacy = Run("legacy", compiled.Load(), pdb, source, LegacyDecompiler.DecompileType);
 
 			Log(upstream);
@@ -143,6 +147,28 @@ namespace dnSpy.Decompiler.Upstream.Tests {
 			// A statement at a compiler breakpoint location that's about different code means a breakpoint on it
 			// would stop in the wrong place
 			Assert.Empty(upstream.Reports.SelectMany(r => r.WrongCode));
+		}
+
+		/// <summary>
+		/// Upstream (ILSpy 11.2) produces sequence points that start inside an instruction for this async method
+		/// (IL_0040-IL_0043 and IL_0043-IL_0053, the latter attributed to the wrong statement). The adapter must
+		/// never pass such statements to the debugger.
+		/// </summary>
+		[Fact]
+		public void RealWorldAsync_InvalidUpstreamSequencePoints_AreRepaired() {
+			var path = System.IO.Path.Combine(AppContext.BaseDirectory, "Samples", "netstandard2.0", "Newtonsoft.Json.dll");
+			var module = ModuleDefMD.Load(path, TestCompiler.CreateModuleContext());
+			var decompiler = TestDecompiler.Create();
+			var result = decompiler.DecompileType(module.Find("Newtonsoft.Json.JsonWriter", false));
+			foreach (var repair in result.DebugInfoRepairs)
+				log.WriteLine("REPAIRED " + repair);
+
+			var moveNext = result.MethodDebugInfos.Single(i => i.Method.DeclaringType.Name == "<<InternalWriteEndAsync>g__AwaitRemaining|11_3>d");
+			var report = DebugInfoValidator.Validate(moveNext, result.Text, null);
+			foreach (var e in report.Errors)
+				log.WriteLine("ERROR " + e);
+			Assert.Empty(report.Errors);
+			Assert.Empty(result.MethodDebugInfos.SelectMany(i => DebugInfoValidator.Validate(i, result.Text, null).Errors));
 		}
 
 		static string Percent(int a, int b) => b == 0 ? "n/a" : $"{100.0 * a / b:0.0}% ({a}/{b})";

@@ -43,9 +43,11 @@ namespace dnSpy.Decompiler.Upstream.Tests.Infrastructure {
 			throw new InvalidOperationException("Legacy C# decompiler not found");
 		});
 
-		public static (string text, IReadOnlyList<MethodDebugInfo> debugInfos) DecompileType(TypeDef type) {
+		public static (string text, IReadOnlyList<MethodDebugInfo> debugInfos) DecompileType(TypeDef type) => DecompileType(type, default);
+
+		public static (string text, IReadOnlyList<MethodDebugInfo> debugInfos) DecompileType(TypeDef type, System.Threading.CancellationToken cancellationToken) {
 			var output = new CapturingOutput();
-			var ctx = new DecompilationContext { CalculateILSpans = true };
+			var ctx = new DecompilationContext { CalculateILSpans = true, CancellationToken = cancellationToken };
 			csharp.Value.Decompile(type, output, ctx);
 			return (output.ToString(), output.DebugInfos);
 		}

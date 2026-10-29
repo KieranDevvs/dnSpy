@@ -109,7 +109,9 @@ namespace dnSpy.Decompiler.Upstream.Tests.Infrastructure {
 					report.Errors.Add($"Statement {statement} has an invalid text span (text length {text.Length})");
 				else if (string.IsNullOrWhiteSpace(text.Substring(ts.Start, ts.Length)))
 					report.Errors.Add($"Statement {statement} only covers whitespace");
-				if (info.HasSpan && (ts.Start < info.Span.Start || ts.End > info.Span.End))
+				// Constructors are exempt: field initializers (and primary constructor parameters) are decompiled
+				// outside the constructor's body but their IL is in the constructor
+				if (info.HasSpan && !info.Method.IsConstructor && (ts.Start < info.Span.Start || ts.End > info.Span.End))
 					report.Errors.Add($"Statement {statement} is outside the method's text span {info.Span}");
 				if (stackDepths.TryGetValue(il.Start, out int depth) && depth != 0)
 					report.NonEmptyStackStarts++;

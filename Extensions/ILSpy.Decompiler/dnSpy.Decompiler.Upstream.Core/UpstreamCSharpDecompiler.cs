@@ -21,6 +21,7 @@ using System;
 using System.Collections.Generic;
 using System.Reflection.Metadata;
 using System.Reflection.Metadata.Ecma335;
+using System.Runtime.CompilerServices;
 using System.Threading;
 using dnlib.DotNet;
 using dnSpy.Contracts.Decompiler;
@@ -40,6 +41,16 @@ namespace dnSpy.Decompiler.Upstream {
 		public IReadOnlyList<MethodDebugInfo> MethodDebugInfos { get; }
 		public BridgedModule Module { get; }
 
+		/// <summary>
+		/// The upstream decompiler's own sequence points (for diagnostics)
+		/// </summary>
+		public IReadOnlyDictionary<ICSharpCode.Decompiler.IL.ILFunction, List<ICSharpCode.Decompiler.DebugInfo.SequencePoint>>? RawSequencePoints { get; set; }
+
+		/// <summary>
+		/// Upstream sequence points that were dropped or fixed because they were invalid
+		/// </summary>
+		public IReadOnlyList<string> DebugInfoRepairs { get; set; } = Array.Empty<string>();
+
 		public UpstreamDecompilationResult(string text, IReadOnlyList<OutputReference> references, IReadOnlyList<MethodDebugInfo> methodDebugInfos, BridgedModule module) {
 			Text = text;
 			References = references;
@@ -54,6 +65,9 @@ namespace dnSpy.Decompiler.Upstream {
 	sealed class UpstreamCSharpDecompiler {
 		readonly ModuleBridgeCache cache;
 		readonly DecompilerSettings settings;
+		// The type system is thread safe and expensive to create (it reads every referenced assembly).
+		// Keyed by the bridged module, so it's recreated when the module is invalidated.
+		readonly ConditionalWeakTable<BridgedModule, DecompilerTypeSystem> typeSystems = new ConditionalWeakTable<BridgedModule, DecompilerTypeSystem>();
 
 		public ModuleBridgeCache Cache => cache;
 
@@ -80,7 +94,7 @@ namespace dnSpy.Decompiler.Upstream {
 			if (token == 0)
 				throw new ArgumentException($"{definition} isn't part of the bridged image of module '{module.Name}'");
 
-			var typeSystem = new DecompilerTypeSystem(bridged.File, new DnlibAssemblyResolver(cache, module), settings);
+			var typeSystem = typeSystems.GetValue(bridged, b => new DecompilerTypeSystem(b.File, new DnlibAssemblyResolver(cache, module), settings));
 			var decompiler = new CSharpDecompiler(typeSystem, settings) {
 				CancellationToken = cancellationToken,
 			};
@@ -92,8 +106,12 @@ namespace dnSpy.Decompiler.Upstream {
 			syntaxTree.AcceptVisitor(new CSharpOutputVisitor(tokenWriter, settings.CSharpFormattingOptions));
 
 			var sequencePoints = decompiler.CreateSequencePoints(syntaxTree);
-			var debugInfos = DebugInfoFactory.Create(syntaxTree, sequencePoints, output, cache, decompilerSettingsVersion: 0);
-			return new UpstreamDecompilationResult(output.ToString(), output.References, debugInfos, bridged);
+			var repairs = new List<string>();
+			var debugInfos = DebugInfoFactory.Create(syntaxTree, sequencePoints, output, cache, decompilerSettingsVersion: 0, repairs);
+			return new UpstreamDecompilationResult(output.ToString(), output.References, debugInfos, bridged) {
+				RawSequencePoints = sequencePoints,
+				DebugInfoRepairs = repairs,
+			};
 		}
 	}
 }
