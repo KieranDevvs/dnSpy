@@ -70,35 +70,8 @@ namespace dnSpy.Decompiler.Upstream.DebugInfo {
 			};
 
 			var body = bodyMethod.Body;
-			var boundaries = GetInstructionBoundaries(body);
-			foreach (var sp in points) {
-				if (sp.IsHidden || sp.EndOffset <= sp.Offset)
-					continue;
-				int start = output.ToOffset(sp.StartLine, sp.StartColumn);
-				int end = output.ToOffset(sp.EndLine, sp.EndColumn);
-				if (sp.StartLine <= 0 || end <= start) {
-					// The node has no text location (it wasn't written), nothing to map the IL to
-					repairs.Add($"{bodyMethod.FullName}: dropped statement IL_{sp.Offset:X4}-IL_{sp.EndOffset:X4} (no text location)");
-					continue;
-				}
-				uint ilStart = (uint)sp.Offset;
-				uint ilEnd = (uint)sp.EndOffset;
-				if (boundaries is not null) {
-					// Upstream sometimes produces offsets inside an instruction (seen in async MoveNext methods).
-					// Such a statement is attributed to the wrong IL: drop it rather than let a breakpoint on it
-					// stop in other code. The IL is then treated as hidden by the stepper.
-					if (!boundaries.Contains(ilStart)) {
-						repairs.Add($"{bodyMethod.FullName}: dropped statement IL_{ilStart:X4}-IL_{ilEnd:X4} (starts inside an instruction)");
-						continue;
-					}
-					if (!boundaries.Contains(ilEnd)) {
-						uint fixedEnd = boundaries.Where(b => b > ilEnd).DefaultIfEmpty(ilEnd).Min();
-						repairs.Add($"{bodyMethod.FullName}: statement IL_{ilStart:X4}-IL_{ilEnd:X4} ends inside an instruction, end moved to IL_{fixedEnd:X4}");
-						ilEnd = fixedEnd;
-					}
-				}
-				builder.Add(new SourceStatement(ILSpan.FromBounds(ilStart, ilEnd), TextSpan.FromBounds(start, end)));
-			}
+			foreach (var statement in SequencePointSanitizer.Sanitize(points, GetInstructionBoundaries(body), output.ToOffset, bodyMethod.FullName, repairs))
+				builder.Add(statement);
 
 			builder.Scope.Span = ILSpan.FromBounds(0, (uint)(body is null ? function.CodeSize : body.GetCodeSize()));
 			builder.Scope.Locals.AddRange(GetLocals(function, body, cache));
