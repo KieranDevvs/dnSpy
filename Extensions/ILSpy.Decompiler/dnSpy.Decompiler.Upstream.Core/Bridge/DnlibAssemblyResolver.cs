@@ -18,6 +18,7 @@
 */
 
 using System;
+using System.Collections.Generic;
 using System.Threading.Tasks;
 using dnlib.DotNet;
 using ICSharpCode.Decompiler.Metadata;
@@ -30,10 +31,43 @@ namespace dnSpy.Decompiler.Upstream.Bridge {
 	sealed class DnlibAssemblyResolver : ICSharpCode.Decompiler.Metadata.IAssemblyResolver {
 		readonly ModuleBridgeCache cache;
 		readonly ModuleDef sourceModule;
+		readonly bool cacheImages;
+		readonly List<BridgedModule> resolvedModules = new List<BridgedModule>();
+		bool hadFailures;
 
-		public DnlibAssemblyResolver(ModuleBridgeCache cache, ModuleDef sourceModule) {
+		/// <param name="cache">Cache</param>
+		/// <param name="sourceModule">Module whose references are resolved</param>
+		/// <param name="cacheImages">false to not cache the images of modules that aren't cached yet (eg. dnSpy
+		/// resolves references to temporary modules while it doesn't load assemblies)</param>
+		public DnlibAssemblyResolver(ModuleBridgeCache cache, ModuleDef sourceModule, bool cacheImages = true) {
 			this.cache = cache ?? throw new ArgumentNullException(nameof(cache));
 			this.sourceModule = sourceModule ?? throw new ArgumentNullException(nameof(sourceModule));
+			this.cacheImages = cacheImages;
+		}
+
+		/// <summary>
+		/// True if a reference couldn't be resolved (adding assemblies can change the result)
+		/// </summary>
+		public bool HadFailures {
+			get {
+				lock (resolvedModules)
+					return hadFailures;
+			}
+		}
+
+		/// <summary>
+		/// True if one of the resolved modules' images has been invalidated
+		/// </summary>
+		public bool UsesInvalidatedModule {
+			get {
+				lock (resolvedModules) {
+					foreach (var bridged in resolvedModules) {
+						if (bridged.IsInvalidated)
+							return true;
+					}
+					return false;
+				}
+			}
 		}
 
 		public MetadataFile? Resolve(IAssemblyReference reference) {
@@ -68,15 +102,22 @@ namespace dnSpy.Decompiler.Upstream.Bridge {
 		public IDisposable? BeginSnapshot() => null;
 
 		MetadataFile? TryBridge(ModuleDef? module) {
-			if (module is null)
-				return null;
-			try {
-				return cache.Get(module).File;
+			BridgedModule? bridged = null;
+			if (module is not null) {
+				try {
+					bridged = cache.Get(module, cacheImages);
+				}
+				catch (ModuleBridgeException) {
+					// Decompile anyway, the types in this module will be unresolved
+				}
 			}
-			catch (ModuleBridgeException) {
-				// Decompile anyway, the types in this module will be unresolved
-				return null;
+			lock (resolvedModules) {
+				if (bridged is null)
+					hadFailures = true;
+				else
+					resolvedModules.Add(bridged);
 			}
+			return bridged?.File;
 		}
 	}
 }

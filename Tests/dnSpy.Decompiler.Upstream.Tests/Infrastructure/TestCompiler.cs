@@ -65,9 +65,10 @@ namespace dnSpy.Decompiler.Upstream.Tests.Infrastructure {
 				.Select(a => (MetadataReference)MetadataReference.CreateFromFile(a)).ToArray();
 		});
 
-		public static CompiledProgram Compile(string name, string source, bool optimize = false, LanguageVersion languageVersion = LanguageVersion.Preview) {
+		public static CompiledProgram Compile(string name, string source, bool optimize = false, LanguageVersion languageVersion = LanguageVersion.Preview, CompiledProgram[]? references = null) {
 			var tree = CSharpSyntaxTree.ParseText(SourceText.From(source, Encoding.UTF8), new CSharpParseOptions(languageVersion), path: name + ".cs");
-			var compilation = CSharpCompilation.Create(name, new[] { tree }, references.Value,
+			var allReferences = TestCompiler.references.Value.Concat((references ?? Array.Empty<CompiledProgram>()).Select(a => MetadataReference.CreateFromImage(a.Image)));
+			var compilation = CSharpCompilation.Create(name, new[] { tree }, allReferences,
 				new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary,
 					optimizationLevel: optimize ? OptimizationLevel.Release : OptimizationLevel.Debug,
 					allowUnsafe: true, nullableContextOptions: NullableContextOptions.Enable));

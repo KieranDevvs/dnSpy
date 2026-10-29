@@ -21,6 +21,7 @@ using System;
 using System.Collections.Generic;
 using System.Reflection.Metadata;
 using System.Reflection.Metadata.Ecma335;
+using System.Runtime.CompilerServices;
 using dnlib.DotNet;
 using ICSharpCode.Decompiler.Metadata;
 using ICSharpCode.Decompiler.TypeSystem;
@@ -33,21 +34,33 @@ namespace dnSpy.Decompiler.Upstream.Bridge {
 	sealed class ModuleBridgeCache {
 		readonly object lockObj = new object();
 		readonly Dictionary<ModuleDef, BridgedModule> byModule = new Dictionary<ModuleDef, BridgedModule>();
-		readonly Dictionary<MetadataFile, BridgedModule> byFile = new Dictionary<MetadataFile, BridgedModule>();
 		readonly Dictionary<ModuleDef, ModuleBridgeException> failures = new Dictionary<ModuleDef, ModuleBridgeException>();
+		// Every image handed out, cached or not, so entities of a decompilation that's still using an image that
+		// was invalidated (or never cached) can still be mapped back to dnlib
+		readonly ConditionalWeakTable<MetadataFile, BridgedModule> allFiles = new ConditionalWeakTable<MetadataFile, BridgedModule>();
 		readonly Func<ModuleDef, bool> isModified;
 		int generation;
+		int addedGeneration;
 
 		public ModuleBridgeOptions Options { get; }
 
 		/// <summary>
-		/// Incremented whenever a module is invalidated. Anything built from bridged modules (e.g. a type system,
-		/// which also holds the images of all referenced modules) must be rebuilt when it changes.
+		/// Incremented whenever a module's image is invalidated
 		/// </summary>
 		public int Generation {
 			get {
 				lock (lockObj)
 					return generation;
+			}
+		}
+
+		/// <summary>
+		/// Incremented when assemblies were added: references that couldn't be resolved may now resolve
+		/// </summary>
+		public int AddedGeneration {
+			get {
+				lock (lockObj)
+					return addedGeneration;
 			}
 		}
 
@@ -59,7 +72,12 @@ namespace dnSpy.Decompiler.Upstream.Bridge {
 			this.isModified = isModified ?? (_ => false);
 		}
 
-		public BridgedModule Get(ModuleDef module) {
+		/// <summary>
+		/// Gets the bridged image of a module
+		/// </summary>
+		/// <param name="module">Module</param>
+		/// <param name="cacheResult">false to not cache a new image (eg. a temporary module that dnSpy doesn't show)</param>
+		public BridgedModule Get(ModuleDef module, bool cacheResult = true) {
 			if (module is null)
 				throw new ArgumentNullException(nameof(module));
 			int startGeneration;
@@ -77,7 +95,7 @@ namespace dnSpy.Decompiler.Upstream.Bridge {
 			}
 			catch (ModuleBridgeException ex) {
 				lock (lockObj) {
-					if (generation == startGeneration)
+					if (generation == startGeneration && cacheResult)
 						failures[module] = ex;
 				}
 				throw;
@@ -87,11 +105,12 @@ namespace dnSpy.Decompiler.Upstream.Bridge {
 					created.Dispose();
 					return bridged;
 				}
+				allFiles.Add(created.File, created);
 				// Invalidated while we were creating it: the result may be stale, don't cache it
-				if (generation != startGeneration)
-					return created;
-				byModule.Add(module, created);
-				byFile.Add(created.File, created);
+				if (generation != startGeneration || !cacheResult)
+					created.IsInvalidated = generation != startGeneration;
+				else
+					byModule.Add(module, created);
 				return created;
 			}
 		}
@@ -105,35 +124,39 @@ namespace dnSpy.Decompiler.Upstream.Bridge {
 				failures.Remove(module);
 				if (byModule.TryGetValue(module, out var bridged)) {
 					byModule.Remove(module);
-					byFile.Remove(bridged.File);
+					bridged.IsInvalidated = true;
 				}
 			}
 		}
 
 		/// <summary>
-		/// Keeps the bridged images but makes everything built from them (type systems) out of date, e.g. when
-		/// assemblies were added (references may now resolve differently)
+		/// Call it when assemblies were added (references that couldn't be resolved may now resolve)
 		/// </summary>
-		public void InvalidateTypeSystems() {
+		public void OnAssembliesAdded() {
 			lock (lockObj)
-				generation++;
+				addedGeneration++;
 		}
 
 		/// <summary>
-		/// Forgets everything, e.g. when assemblies were removed
+		/// Forgets everything, e.g. when assemblies were removed or reloaded
 		/// </summary>
 		public void InvalidateAll() {
 			lock (lockObj) {
 				generation++;
+				addedGeneration++;
 				failures.Clear();
+				foreach (var bridged in byModule.Values)
+					bridged.IsInvalidated = true;
 				byModule.Clear();
-				byFile.Clear();
 			}
 		}
 
+		/// <summary>
+		/// Gets the bridged module of an image (also images that were invalidated since)
+		/// </summary>
 		public BridgedModule? Find(MetadataFile file) {
 			lock (lockObj)
-				return byFile.TryGetValue(file, out var bridged) ? bridged : null;
+				return allFiles.TryGetValue(file, out var bridged) ? bridged : null;
 		}
 
 		/// <summary>

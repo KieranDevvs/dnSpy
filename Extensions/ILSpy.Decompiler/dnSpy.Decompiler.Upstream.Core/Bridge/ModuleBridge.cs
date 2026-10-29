@@ -90,6 +90,16 @@ namespace dnSpy.Decompiler.Upstream.Bridge {
 			CreationTime = creationTime;
 		}
 
+		/// <summary>
+		/// True once the cache dropped it (the module was edited, reloaded or removed). Anything built from it
+		/// (eg. a type system) is out of date.
+		/// </summary>
+		public bool IsInvalidated {
+			get => isInvalidated;
+			internal set => isInvalidated = value;
+		}
+		volatile bool isInvalidated;
+
 		public void Dispose() => File.Dispose();
 	}
 

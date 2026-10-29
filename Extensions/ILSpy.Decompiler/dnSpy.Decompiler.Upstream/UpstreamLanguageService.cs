@@ -25,6 +25,7 @@ using dnlib.DotNet;
 using dnSpy.Contracts.Decompiler;
 using dnSpy.Contracts.Documents;
 using dnSpy.Contracts.Documents.Tabs;
+using dnSpy.Contracts.Documents.TreeView;
 using dnSpy.Contracts.Extension;
 using dnSpy.Contracts.Settings;
 using dnSpy.Decompiler.Upstream.Settings;
@@ -83,6 +84,24 @@ namespace dnSpy.Decompiler.Upstream {
 		/// </summary>
 		public IDocumentTab[] GetTabs(IDocumentTabService documentTabService) =>
 			documentTabService.VisibleFirstTabs.Where(t => (t.Content as IDecompilerTabContent)?.Decompiler == Language).ToArray();
+
+		/// <summary>
+		/// Visible tabs that show this decompiler's output of a module in <paramref name="documents"/> or of a
+		/// module that references one of them
+		/// </summary>
+		public IDocumentTab[] GetTabs(IDocumentTabService documentTabService, IDsDocument[] documents) {
+			var docs = new HashSet<IDsDocument>(documents);
+			var asmNames = new HashSet<string>(documents.Select(a => a.AssemblyDef?.Name.String).OfType<string>(), StringComparer.OrdinalIgnoreCase);
+			return GetTabs(documentTabService).Where(tab => tab.Content.Nodes.Any(node => {
+				var document = node.GetDocumentNode()?.Document;
+				if (document is null)
+					return false;
+				if (docs.Contains(document))
+					return true;
+				var module = document.ModuleDef;
+				return module is not null && module.GetAssemblyRefs().Any(a => asmNames.Contains(a.Name.String));
+			})).ToArray();
+		}
 	}
 
 	[Export(typeof(IDecompilerCreator))]
@@ -118,9 +137,8 @@ namespace dnSpy.Decompiler.Upstream {
 			if (modules.Length == 0)
 				return;
 			service.Language.OnModulesModified(modules);
-			// dnSpy refreshed the tabs before raising the event, so they may have used the old image. Edits are
-			// rare, refreshing this decompiler's visible tabs again is cheap enough.
-			var tabs = service.GetTabs(documentTabService);
+			// dnSpy refreshed the tabs before raising the event, so they may have used the old image
+			var tabs = service.GetTabs(documentTabService, e.Documents);
 			if (tabs.Length != 0)
 				documentTabService.Refresh(tabs);
 		}
@@ -131,10 +149,29 @@ namespace dnSpy.Decompiler.Upstream {
 				service.Language.OnModulesAdded();
 				break;
 			case NotifyDocumentCollectionType.Remove:
+				service.Language.OnModulesRemoved(e.Documents.Select(a => a.ModuleDef).OfType<ModuleDef>());
+				break;
 			case NotifyDocumentCollectionType.Clear:
-				service.Language.OnModulesRemoved();
+				service.Language.OnAllModulesRemoved();
 				break;
 			}
 		}
+	}
+
+	/// <summary>
+	/// "Reload all" doesn't raise the collection events for documents that are reloaded
+	/// </summary>
+	[ExportDocumentListListener]
+	sealed class UpstreamDocumentListListener : IDocumentListListener {
+		readonly UpstreamLanguageService service;
+
+		[ImportingConstructor]
+		UpstreamDocumentListListener(UpstreamLanguageService service) => this.service = service;
+
+		public bool CanLoad => true;
+		public bool CanReload => true;
+		public void BeforeLoad(bool isReload) { }
+		public void AfterLoad(bool isReload) => service.Language.OnAllModulesRemoved();
+		public bool CheckCanLoad(bool isReload) => true;
 	}
 }

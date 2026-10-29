@@ -66,20 +66,27 @@ namespace dnSpy.Decompiler.Upstream {
 		readonly ModuleEditTracker editTracker;
 		readonly ModuleBridgeCache cache;
 		readonly MemberVisibility memberVisibility = new MemberVisibility();
-		readonly IDocumentationProvider documentationProvider;
-		readonly ConditionalWeakTable<BridgedModule, CachedTypeSystem> typeSystems = new ConditionalWeakTable<BridgedModule, CachedTypeSystem>();
+		readonly TypeSystemCache typeSystems;
 
-		sealed class CachedTypeSystem {
-			public int Generation;
-			public TypeSystemOptions Options;
-			public DecompilerTypeSystem? TypeSystem;
-		}
+		/// <summary>
+		/// XML documentation (tests replace it)
+		/// </summary>
+		internal IDocumentationProvider DocumentationProvider { get; set; }
 
-		public UpstreamCSharpLanguage(UpstreamDecompilerSettings langSettings) {
+		public UpstreamCSharpLanguage(UpstreamDecompilerSettings langSettings) : this(langSettings, null) { }
+
+		/// <param name="langSettings">Settings</param>
+		/// <param name="onBridging">Tests: called when a module is about to be bridged</param>
+		internal UpstreamCSharpLanguage(UpstreamDecompilerSettings langSettings, Action<ModuleDef>? onBridging) {
 			this.langSettings = langSettings ?? throw new ArgumentNullException(nameof(langSettings));
 			editTracker = new ModuleEditTracker();
-			cache = new ModuleBridgeCache(new ModuleBridgeOptions(), editTracker.IsModified);
-			documentationProvider = new DnlibDocumentationProvider(cache);
+			cache = new ModuleBridgeCache(new ModuleBridgeOptions(), module => {
+				bool modified = editTracker.IsModified(module);
+				onBridging?.Invoke(module);
+				return modified;
+			});
+			DocumentationProvider = new DnlibDocumentationProvider(cache);
+			typeSystems = new TypeSystemCache(cache);
 		}
 
 		/// <summary>
@@ -115,14 +122,22 @@ namespace dnSpy.Decompiler.Upstream {
 		}
 
 		/// <summary>
-		/// Call it when assemblies have been added: references may resolve differently
+		/// Call it when assemblies have been added: references that couldn't be resolved may now resolve
 		/// </summary>
-		public void OnModulesAdded() => cache.InvalidateTypeSystems();
+		public void OnModulesAdded() => cache.OnAssembliesAdded();
 
 		/// <summary>
 		/// Call it when assemblies have been removed (frees their images)
 		/// </summary>
-		public void OnModulesRemoved() => cache.InvalidateAll();
+		public void OnModulesRemoved(IEnumerable<ModuleDef> modules) {
+			foreach (var module in modules)
+				cache.Invalidate(module);
+		}
+
+		/// <summary>
+		/// Call it when all assemblies were removed or reloaded (frees all images)
+		/// </summary>
+		public void OnAllModulesRemoved() => cache.InvalidateAll();
 
 		/// <summary>
 		/// Method bodies edited with the IL editor or the C# compiler are marked in the context (it's set before the
@@ -206,22 +221,24 @@ namespace dnSpy.Decompiler.Upstream {
 			WriteAssembly(asm, output, ctx);
 			if (asm.ManifestModule is null)
 				return;
+			// dnSpy resolves references to temporary modules while it doesn't load assemblies: don't cache anything built from them
 			using (ctx.DisableAssemblyLoad())
-				Decompile(asm.ManifestModule, Array.Empty<MethodDef>(), output, ctx, (decompiler, handle) => decompiler.DecompileModuleAndAssemblyAttributes(), null);
+				Decompile(asm.ManifestModule, Array.Empty<MethodDef>(), output, ctx, (decompiler, handle) => decompiler.DecompileModuleAndAssemblyAttributes(), null, cacheTypeSystem: false);
 		}
 
 		public override void Decompile(ModuleDef mod, IDecompilerOutput output, DecompilationContext ctx) {
 			WriteModule(mod, output, ctx);
 			using (ctx.DisableAssemblyLoad())
-				Decompile(mod, Array.Empty<MethodDef>(), output, ctx, (decompiler, handle) => decompiler.DecompileModuleAndAssemblyAttributes(), null);
+				Decompile(mod, Array.Empty<MethodDef>(), output, ctx, (decompiler, handle) => decompiler.DecompileModuleAndAssemblyAttributes(), null, cacheTypeSystem: false);
 		}
 
 		void Decompile(ModuleDef module, IEnumerable<MethodDef> methods, IDecompilerOutput output, DecompilationContext ctx,
-			Func<UpstreamCSharpDecompilerEngine, EntityHandle, SyntaxTree> decompile, IMemberDef? definition) {
+			Func<UpstreamCSharpDecompilerEngine, EntityHandle, SyntaxTree> decompile, IMemberDef? definition, bool cacheTypeSystem = true) {
 			CheckModified(module, methods, ctx);
+			// The version first: if the settings change now, the debug info gets the old version and is recreated
+			int settingsVersion = langSettings.Version;
 			var settings = langSettings.CreateDecompilationSettings();
 			bool showTokens = langSettings.ShowTokenAndRvaComments;
-			int settingsVersion = langSettings.Version;
 			BridgedModule bridged;
 			try {
 				bridged = cache.Get(module);
@@ -241,9 +258,9 @@ namespace dnSpy.Decompiler.Upstream {
 			}
 
 			BigStackRunner.Run(() => {
-				var decompiler = new UpstreamCSharpDecompilerEngine(GetTypeSystem(bridged, settings), settings) {
+				var decompiler = new UpstreamCSharpDecompilerEngine(typeSystems.Get(bridged, settings, cacheTypeSystem), settings) {
 					CancellationToken = ctx.CancellationToken,
-					DocumentationProvider = documentationProvider,
+					DocumentationProvider = DocumentationProvider,
 				};
 				if (settings.UseDebugSymbols)
 					decompiler.DebugInfoProvider = DnlibDebugInfoProvider.TryCreate(bridged);
@@ -254,28 +271,12 @@ namespace dnSpy.Decompiler.Upstream {
 			});
 		}
 
-		DecompilerTypeSystem GetTypeSystem(BridgedModule bridged, DecompilerSettings settings) {
-			// The type system is thread safe and expensive to create (it reads every referenced assembly). It's
-			// rebuilt when any module is invalidated since it also holds the images of the referenced modules.
-			int generation = cache.Generation;
-			var options = DecompilerTypeSystem.GetOptions(settings);
-			var cached = typeSystems.GetValue(bridged, _ => new CachedTypeSystem());
-			lock (cached) {
-				if (cached.TypeSystem is null || cached.Generation != generation || cached.Options != options) {
-					cached.TypeSystem = new DecompilerTypeSystem(bridged.File, new DnlibAssemblyResolver(cache, bridged.Module), settings);
-					cached.Generation = generation;
-					cached.Options = options;
-				}
-				return cached.TypeSystem;
-			}
-		}
-
 		void WriteCode(SyntaxTree syntaxTree, UpstreamCSharpDecompilerEngine decompiler, DecompilerSettings settings, int settingsVersion, ModuleDef module, IDecompilerOutput output) {
 			syntaxTree.AcceptVisitor(new InsertParenthesesVisitor { InsertParenthesesForReadability = true });
 			var references = new ReferenceFactory(cache, module);
 			var variables = new SourceVariableTable(cache, references.TypeSigConverter);
 			var textOutput = new DnSpyTextOutput(output, references, variables);
-			var tokenWriter = TokenWriter.InsertRequiredSpaces(TokenWriter.WrapInWriterThatSetsLocationsInAST(new DnSpyTokenWriter(textOutput, settings)));
+			var tokenWriter = TokenWriter.InsertRequiredSpaces(TokenWriter.WrapInWriterThatSetsLocationsInAST(new DnSpyTokenWriter(textOutput, settings, decompiler.TypeSystem)));
 			syntaxTree.AcceptVisitor(new CSharpOutputVisitor(tokenWriter, settings.CSharpFormattingOptions));
 
 			// Debug info is custom data (the debugger and the text view use it, dnSpy.Console doesn't)
@@ -356,8 +357,10 @@ namespace dnSpy.Decompiler.Upstream {
 					}
 				}
 				if (ctorDecl?.Initializer?.ConstructorInitializerType == ConstructorInitializerType.This) {
+					// The other constructor initializes the fields. (Unlike ILSpy, keep the using declarations: they're
+					// the debug info's imports.)
 					foreach (var node in rootNode.Children.ToArray()) {
-						if (!(node is ConstructorDeclaration))
+						if (node is EntityDeclaration && !(node is ConstructorDeclaration))
 							Remove(node);
 					}
 				}

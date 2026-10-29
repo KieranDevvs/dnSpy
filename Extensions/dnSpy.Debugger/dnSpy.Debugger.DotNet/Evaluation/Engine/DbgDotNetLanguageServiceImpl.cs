@@ -122,7 +122,7 @@ namespace dnSpy.Debugger.DotNet.Evaluation.Engine {
 				};
 
 				var languageDisplayName = ResourceHelper.GetString(lz.Value, lz.Metadata.LanguageDisplayName);
-				yield return new DbgEngineLanguageImpl(dbgModuleReferenceProvider.Value, lz.Metadata.LanguageName, languageDisplayName, lz.Value, dbgMethodDebugInfoProvider.Value, getDecompiler, formatter.Value, valueNodeFactory, dnILInterpreter.Value, dbgAliasProvider.Value, predefinedEvaluationErrorMessagesHelper);
+				yield return new DbgEngineLanguageImpl(dbgModuleReferenceProvider.Value, lz.Metadata.LanguageName, languageDisplayName, lz.Value, dbgMethodDebugInfoProvider.Value, defaultDecompiler, getDecompiler, formatter.Value, valueNodeFactory, dnILInterpreter.Value, dbgAliasProvider.Value, predefinedEvaluationErrorMessagesHelper);
 			}
 		}
 

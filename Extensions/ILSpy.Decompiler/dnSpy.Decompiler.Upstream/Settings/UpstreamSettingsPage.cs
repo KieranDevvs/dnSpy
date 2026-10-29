@@ -106,7 +106,8 @@ namespace dnSpy.Decompiler.Upstream.SettingsUI {
 			group == UpstreamDecompilerSettings.DnSpyGroup ? 0 : group == OtherGroup ? 1 : 2;
 
 		FrameworkElement CreateUI() {
-			var root = new DockPanel { LastChildFill = true, Margin = new Thickness(5) };
+			// dnSpy puts the page in a ScrollViewer unless it is one
+			var root = new StackPanel { Margin = new Thickness(5) };
 
 			var presets = Enum.GetValues(typeof(LanguageVersion)).Cast<LanguageVersion>()
 				.Where(a => a != LanguageVersion.Preview && a != LanguageVersion.Latest)
@@ -133,10 +134,9 @@ namespace dnSpy.Decompiler.Upstream.SettingsUI {
 				RefreshCheckBoxes();
 			};
 			toolbar.Children.Add(resetButton);
-			DockPanel.SetDock(toolbar, Dock.Top);
 			root.Children.Add(toolbar);
 
-			var groups = new StackPanel();
+			var groups = root;
 			var orderedGroups = settingVMs.GroupBy(a => a.Info.Group)
 				.OrderBy(g => GetGroupSortKey(g.Key))
 				.ThenByDescending(g => g.First().Info.GroupOrder);
@@ -149,12 +149,11 @@ namespace dnSpy.Decompiler.Upstream.SettingsUI {
 				}
 				groups.Children.Add(new GroupBox { Header = group.Key, Content = checkBoxes, Margin = new Thickness(0, 0, 0, 5) });
 			}
-			root.Children.Add(new ScrollViewer {
-				Content = groups,
+			return new ScrollViewer {
+				Content = root,
 				VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
 				HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
-			});
-			return root;
+			};
 		}
 
 		sealed class SettingVM : INotifyPropertyChanged {

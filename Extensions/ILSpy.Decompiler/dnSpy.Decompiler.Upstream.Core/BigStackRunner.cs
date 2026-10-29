@@ -36,12 +36,16 @@ namespace dnSpy.Decompiler.Upstream {
 			ExceptionDispatchInfo? error = null;
 			var culture = Thread.CurrentThread.CurrentCulture;
 			var uiCulture = Thread.CurrentThread.CurrentUICulture;
+			var done = new ManualResetEventSlim();
 			var thread = new Thread(() => {
 				try {
 					action();
 				}
 				catch (Exception ex) {
 					error = ExceptionDispatchInfo.Capture(ex);
+				}
+				finally {
+					done.Set();
 				}
 			}, StackSize) {
 				IsBackground = true,
@@ -50,7 +54,17 @@ namespace dnSpy.Decompiler.Upstream {
 				CurrentUICulture = uiCulture,
 			};
 			thread.Start();
-			thread.Join();
+			if (Thread.CurrentThread.GetApartmentState() == ApartmentState.STA) {
+				// The debugger decompiles on the UI thread. Waiting on an STA thread (Join(), WaitOne()) pumps COM
+				// and SendMessage messages, which could re-enter the UI. Like a direct call, don't pump. (The thread
+				// is exiting once it's signaled, no need to join it.)
+				while (!done.IsSet)
+					Thread.Sleep(1);
+			}
+			else {
+				done.Wait();
+				thread.Join();
+			}
 			error?.Throw();
 		}
 	}

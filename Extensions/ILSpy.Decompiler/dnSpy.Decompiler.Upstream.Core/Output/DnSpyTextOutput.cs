@@ -48,8 +48,9 @@ namespace dnSpy.Decompiler.Upstream.Output {
 		// Upstream computes an identifier's end location from its name, but the written name can be longer
 		// ('@', escaped characters) or shorter (truncated). Maps the computed location (and the few columns
 		// after it that upstream derives from it, eg. "catch (Exception ex)" ends one column after the name)
-		// to the real position. Key: line.
-		Dictionary<int, List<(int computedColumn, int realEnd)>>? identifierEnds;
+		// to the real position, but only if the computed position can't be a real one (inside the written
+		// identifier or past the end of the line). Key: line.
+		Dictionary<int, List<(int computedColumn, int realStart, int realEnd)>>? identifierEnds;
 		const int MaxColumnsAfterIdentifier = 3;
 		StringBuilder? buffer;
 		object? bufferColor;
@@ -105,8 +106,15 @@ namespace dnSpy.Decompiler.Upstream.Output {
 
 		public int ToOffset(int line, int column) {
 			if (identifierEnds is not null && identifierEnds.TryGetValue(line, out var ends)) {
-				foreach (var (computedColumn, realEnd) in ends) {
-					if (computedColumn <= column && column <= computedColumn + MaxColumnsAfterIdentifier)
+				int position = line >= 1 && line <= lineStarts.Count ? lineStarts[line - 1] + Math.Max(0, column - 1) : -1;
+				int nextLineStart = line < lineStarts.Count ? lineStarts[line] : int.MaxValue;
+				int endOfText = output.Length;
+				foreach (var (computedColumn, realStart, realEnd) in ends) {
+					if (column < computedColumn || column > computedColumn + MaxColumnsAfterIdentifier)
+						continue;
+					bool insideIdentifier = realStart < position && position < realEnd;
+					bool pastEndOfLine = position >= nextLineStart || position > endOfText;
+					if (insideIdentifier || pastEndOfLine)
 						return realEnd + (column - computedColumn);
 				}
 			}
@@ -118,19 +126,19 @@ namespace dnSpy.Decompiler.Upstream.Output {
 		}
 
 		/// <summary>
-		/// Called after an identifier was written: upstream's computed end location of the identifier is
-		/// <paramref name="computedEnd"/>, the real end is the current position
+		/// Called after an identifier was written at <paramref name="start"/>: upstream's computed end location of
+		/// the identifier is <paramref name="computedEnd"/>, the real end is the current position
 		/// </summary>
-		public void SetIdentifierEnd(TextLocation computedEnd) {
-			if (computedEnd.IsEmpty)
+		public void SetIdentifierEnd(TextLocation computedEnd, int start) {
+			if (computedEnd.IsEmpty || computedEnd.Line != lineStarts.Count)
 				return;
 			int end = NextPosition;
-			if (ToOffset(computedEnd.Line, computedEnd.Column) == end)
+			if (lineStarts[computedEnd.Line - 1] + computedEnd.Column - 1 == end)
 				return;
-			identifierEnds ??= new Dictionary<int, List<(int, int)>>();
+			identifierEnds ??= new Dictionary<int, List<(int, int, int)>>();
 			if (!identifierEnds.TryGetValue(computedEnd.Line, out var ends))
-				identifierEnds.Add(computedEnd.Line, ends = new List<(int, int)>());
-			ends.Add((computedEnd.Column, end));
+				identifierEnds.Add(computedEnd.Line, ends = new List<(int, int, int)>());
+			ends.Add((computedEnd.Column, start, end));
 		}
 
 		// Upstream sets it to the formatting options' indentation; dnSpy's output does its own indentation
@@ -277,7 +285,7 @@ namespace dnSpy.Decompiler.Upstream.Output {
 				break;
 
 			case ICSharpCode.Decompiler.TypeSystem.IMethod localFunction when !isHoverOnly:
-				dnSpyReference = references.Cache.ToDnlib(localFunction) ?? (object)localFunction;
+				dnSpyReference = references.Cache.ToDnlib(localFunction) ?? (object)variables.GetSyntheticVariable(localFunction, text);
 				color = ReferenceFactory.GetColor(localFunction);
 				break;
 
@@ -289,7 +297,7 @@ namespace dnSpy.Decompiler.Upstream.Output {
 
 			default:
 				// Range variables of query expressions ('let'): use an object dnSpy knows (tooltips)
-				dnSpyReference = variables.GetRangeVariable(reference, text);
+				dnSpyReference = variables.GetSyntheticVariable(reference, text);
 				color = BoxedTextColor.Local;
 				break;
 			}

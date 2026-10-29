@@ -62,8 +62,13 @@ namespace dnSpy.Decompiler.Upstream.Output {
 			}
 		}
 
-		public DnSpyTokenWriter(DnSpyTextOutput output, DecompilerSettings settings)
-			: base(new TextTokenWriter(output, settings)) => this.output = output;
+		readonly ICompilation? compilation;
+
+		public DnSpyTokenWriter(DnSpyTextOutput output, DecompilerSettings settings, ICompilation? compilation)
+			: base(new TextTokenWriter(output, settings)) {
+			this.output = output;
+			this.compilation = compilation;
+		}
 
 		public TextLocation Location => output.Location;
 		public int Length => output.NextPosition;
@@ -134,11 +139,11 @@ namespace dnSpy.Decompiler.Upstream.Output {
 			}
 			else if (node?.GetSymbol() is INamespace ns) {
 				color = BoxedTextColor.Namespace;
-				reference = new NamespaceReference(output.References.Module.Assembly, ns.FullName);
+				reference = CreateNamespaceReference(ns, ns.FullName);
 			}
 			else if (node is not null && IsNamespaceName(node, out var nsName)) {
 				color = BoxedTextColor.Namespace;
-				reference = new NamespaceReference(output.References.Module.Assembly, nsName);
+				reference = CreateNamespaceReference(FindNamespace(nsName), nsName);
 			}
 			else if (identifier.Parent is AstType && (identifier.Name == "var" || (identifier.Name == "global" && node?.GetSymbol() is null)))
 				forcedColor = BoxedTextColor.Keyword;
@@ -149,8 +154,9 @@ namespace dnSpy.Decompiler.Upstream.Output {
 				output.IdentifierReference = reference;
 				output.IdentifierReferenceFlags = referenceFlags;
 				try {
+					int start = output.NextPosition;
 					base.WriteIdentifier(identifier);
-					output.SetIdentifierEnd(identifier.EndLocation);
+					output.SetIdentifierEnd(identifier.EndLocation, start);
 				}
 				finally {
 					output.IsIdentifier = false;
@@ -228,6 +234,31 @@ namespace dnSpy.Decompiler.Upstream.Output {
 				return null;
 			int dnlibIndex = index + md.Parameters.MethodSigIndexBase;
 			return (uint)dnlibIndex < (uint)md.Parameters.Count ? md.Parameters[dnlibIndex] : null;
+		}
+
+		/// <summary>
+		/// The assembly is the one that defines the namespace's types (dnSpy shows the namespace in that assembly)
+		/// </summary>
+		NamespaceReference CreateNamespaceReference(INamespace? ns, string name) {
+			dnlib.DotNet.IAssembly? assembly = null;
+			if (ns is not null) {
+				var mainModule = compilation?.MainModule;
+				var type = ns.Types.FirstOrDefault(t => t.ParentModule == mainModule) ?? ns.Types.FirstOrDefault();
+				var module = type?.ParentModule ?? ns.ContributingModules.FirstOrDefault();
+				if (module?.MetadataFile is ICSharpCode.Decompiler.Metadata.MetadataFile file)
+					assembly = output.References.Cache.Find(file)?.Module.Assembly;
+			}
+			return new NamespaceReference(assembly ?? output.References.Module.Assembly, name);
+		}
+
+		INamespace? FindNamespace(string name) {
+			var ns = compilation?.RootNamespace;
+			foreach (var part in name.Split('.')) {
+				if (ns is null)
+					break;
+				ns = ns.GetChildNamespace(part);
+			}
+			return ns;
 		}
 
 		/// <summary>

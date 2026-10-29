@@ -51,11 +51,12 @@ namespace dnSpy.Debugger.DotNet.Evaluation.Engine {
 
 		readonly DbgMethodDebugInfoProvider dbgMethodDebugInfoProvider;
 		readonly Func<IDecompiler> getDecompiler;
+		readonly IDecompiler defaultDecompiler;
 
 		readonly DbgDotNetExpressionCompiler expressionCompiler;
 		readonly IDebuggerDisplayAttributeEvaluator debuggerDisplayAttributeEvaluator;
 
-		public DbgEngineLanguageImpl(DbgModuleReferenceProvider dbgModuleReferenceProvider, string name, string displayName, DbgDotNetExpressionCompiler expressionCompiler, DbgMethodDebugInfoProvider dbgMethodDebugInfoProvider, Func<IDecompiler> getDecompiler, DbgDotNetFormatter formatter, DbgDotNetEngineValueNodeFactory valueNodeFactory, DbgDotNetILInterpreter dnILInterpreter, DbgAliasProvider dbgAliasProvider, IPredefinedEvaluationErrorMessagesHelper predefinedEvaluationErrorMessagesHelper) {
+		public DbgEngineLanguageImpl(DbgModuleReferenceProvider dbgModuleReferenceProvider, string name, string displayName, DbgDotNetExpressionCompiler expressionCompiler, DbgMethodDebugInfoProvider dbgMethodDebugInfoProvider, IDecompiler defaultDecompiler, Func<IDecompiler> getDecompiler, DbgDotNetFormatter formatter, DbgDotNetEngineValueNodeFactory valueNodeFactory, DbgDotNetILInterpreter dnILInterpreter, DbgAliasProvider dbgAliasProvider, IPredefinedEvaluationErrorMessagesHelper predefinedEvaluationErrorMessagesHelper) {
 			if (dbgModuleReferenceProvider is null)
 				throw new ArgumentNullException(nameof(dbgModuleReferenceProvider));
 			if (formatter is null)
@@ -72,6 +73,7 @@ namespace dnSpy.Debugger.DotNet.Evaluation.Engine {
 			DisplayName = displayName ?? throw new ArgumentNullException(nameof(displayName));
 			this.dbgMethodDebugInfoProvider = dbgMethodDebugInfoProvider ?? throw new ArgumentNullException(nameof(dbgMethodDebugInfoProvider));
 			this.expressionCompiler = expressionCompiler ?? throw new ArgumentNullException(nameof(expressionCompiler));
+			this.defaultDecompiler = defaultDecompiler ?? throw new ArgumentNullException(nameof(defaultDecompiler));
 			this.getDecompiler = getDecompiler ?? throw new ArgumentNullException(nameof(getDecompiler));
 			var expressionEvaluator = new DbgEngineExpressionEvaluatorImpl(dbgModuleReferenceProvider, expressionCompiler, dnILInterpreter, dbgAliasProvider, predefinedEvaluationErrorMessagesHelper);
 			ExpressionEvaluator = expressionEvaluator;
@@ -131,6 +133,11 @@ namespace dnSpy.Debugger.DotNet.Evaluation.Engine {
 				var decompiler = getDecompiler();
 				var state = StateWithKey<RuntimeState>.GetOrCreate(context.Runtime, decompiler);
 				var debugInfo = GetOrCreateDebugInfo(context, state, decompiler, loc, cancellationToken);
+				// The selected decompiler couldn't create debug info, try the language's default decompiler
+				if (debugInfo is null && decompiler != defaultDecompiler) {
+					state = StateWithKey<RuntimeState>.GetOrCreate(context.Runtime, defaultDecompiler);
+					debugInfo = GetOrCreateDebugInfo(context, state, defaultDecompiler, loc, cancellationToken);
+				}
 				if (debugInfo is not null)
 					DbgLanguageDebugInfoExtensions.SetLanguageDebugInfo(context, debugInfo);
 			}
