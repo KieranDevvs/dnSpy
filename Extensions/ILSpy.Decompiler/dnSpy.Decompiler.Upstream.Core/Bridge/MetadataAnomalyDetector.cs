@@ -85,10 +85,10 @@ namespace dnSpy.Decompiler.Upstream.Bridge {
 					result.Add($"Row count mismatch in table {(Table)i}: dnlib={dnlibRows}, SRM={srmRows}");
 			}
 
-			CompareHeap(result, "#Strings", module.Metadata.StringsStream?.StreamLength, reader.GetHeapSize(HeapIndex.String));
-			CompareHeap(result, "#Blob", module.Metadata.BlobStream?.StreamLength, reader.GetHeapSize(HeapIndex.Blob));
-			CompareHeap(result, "#GUID", module.Metadata.GuidStream?.StreamLength, reader.GetHeapSize(HeapIndex.Guid));
-			CompareHeap(result, "#US", module.Metadata.USStream?.StreamLength, reader.GetHeapSize(HeapIndex.UserString));
+			CompareHeap(result, "#Strings", module.Metadata.StringsStream, reader.GetHeapSize(HeapIndex.String));
+			CompareHeap(result, "#Blob", module.Metadata.BlobStream, reader.GetHeapSize(HeapIndex.Blob));
+			CompareHeap(result, "#GUID", module.Metadata.GuidStream, reader.GetHeapSize(HeapIndex.Guid));
+			CompareHeap(result, "#US", module.Metadata.USStream, reader.GetHeapSize(HeapIndex.UserString));
 			if (result.Count != 0)
 				return Truncate(result);
 
@@ -101,6 +101,17 @@ namespace dnSpy.Decompiler.Upstream.Bridge {
 				}
 				if (!Same(reader.GetString(srm.Name), dnlib.Name) || !Same(reader.GetString(srm.Namespace), dnlib.Namespace))
 					result.Add($"Type name mismatch at 0x{dnlib.MDToken.Raw:X8}");
+				// Which methods/fields belong to the type and which type it's nested in come from table lookups
+				// (list columns, sorted NestedClass table) that readers can resolve differently
+				uint rid = dnlib.MDToken.Rid;
+				if (!SameRids(srm.GetMethods(), module.Metadata.GetMethodRidList(rid)))
+					result.Add($"Methods of type 0x{dnlib.MDToken.Raw:X8} differ");
+				if (!SameRids(srm.GetFields(), module.Metadata.GetFieldRidList(rid)))
+					result.Add($"Fields of type 0x{dnlib.MDToken.Raw:X8} differ");
+				var srmDeclaring = srm.GetDeclaringType();
+				uint srmDeclaringRid = srmDeclaring.IsNil ? 0 : (uint)MetadataTokens.GetRowNumber(srmDeclaring);
+				if (srmDeclaringRid != (dnlib.DeclaringType?.MDToken.Rid ?? 0))
+					result.Add($"Declaring type of 0x{dnlib.MDToken.Raw:X8} differs");
 				if (result.Count >= MaxReported)
 					return Truncate(result);
 			}
@@ -136,11 +147,40 @@ namespace dnSpy.Decompiler.Upstream.Bridge {
 			return Truncate(result);
 		}
 
-		static void CompareHeap(List<string> result, string name, uint? dnlibSize, int srmSize) {
-			// SRM ignores the trailing alignment padding, dnlib reports the size in the stream header
-			long dnlib = dnlibSize ?? 0;
-			if (srmSize > dnlib || dnlib - srmSize > 3)
-				result.Add($"Heap size mismatch in {name}: dnlib={dnlib}, SRM={srmSize}");
+		static void CompareHeap(List<string> result, string name, DotNetStream? dnlibStream, int srmSize) {
+			long dnlibSize = dnlibStream?.StreamLength ?? 0;
+			if (srmSize == dnlibSize)
+				return;
+			// SRM ignores trailing zero bytes of #Strings (padding), dnlib reports the size in the stream header
+			if (dnlibStream is not null && srmSize < dnlibSize && IsZero(dnlibStream, (uint)srmSize))
+				return;
+			result.Add($"Heap size mismatch in {name}: dnlib={dnlibSize}, SRM={srmSize}");
+		}
+
+		static bool IsZero(DotNetStream stream, uint start) {
+			var reader = stream.CreateReader();
+			reader.Position = start;
+			while (reader.Position < reader.Length) {
+				if (reader.ReadByte() != 0)
+					return false;
+			}
+			return true;
+		}
+
+		static bool SameRids<THandle>(IReadOnlyCollection<THandle> srm, RidList dnlib) where THandle : struct {
+			if (srm.Count != dnlib.Count)
+				return false;
+			int i = 0;
+			foreach (var handle in srm) {
+				int row = handle switch {
+					MethodDefinitionHandle m => MetadataTokens.GetRowNumber(m),
+					FieldDefinitionHandle f => MetadataTokens.GetRowNumber(f),
+					_ => -1,
+				};
+				if ((uint)row != dnlib[i++])
+					return false;
+			}
+			return true;
 		}
 
 		static bool Same(string srm, UTF8String? dnlib) => StringComparer.Ordinal.Equals(srm, UTF8String.ToSystemStringOrEmpty(dnlib));

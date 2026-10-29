@@ -65,9 +65,14 @@ namespace dnSpy.Decompiler.Upstream {
 	sealed class UpstreamCSharpDecompiler {
 		readonly ModuleBridgeCache cache;
 		readonly DecompilerSettings settings;
-		// The type system is thread safe and expensive to create (it reads every referenced assembly).
-		// Keyed by the bridged module, so it's recreated when the module is invalidated.
-		readonly ConditionalWeakTable<BridgedModule, DecompilerTypeSystem> typeSystems = new ConditionalWeakTable<BridgedModule, DecompilerTypeSystem>();
+		// The type system is thread safe and expensive to create (it reads every referenced assembly). It's
+		// rebuilt when any module is invalidated since it also holds the images of the referenced modules.
+		readonly ConditionalWeakTable<BridgedModule, CachedTypeSystem> typeSystems = new ConditionalWeakTable<BridgedModule, CachedTypeSystem>();
+
+		sealed class CachedTypeSystem {
+			public int Generation;
+			public DecompilerTypeSystem? TypeSystem;
+		}
 
 		public ModuleBridgeCache Cache => cache;
 
@@ -88,13 +93,25 @@ namespace dnSpy.Decompiler.Upstream {
 			return Decompile(member.Module, member, (decompiler, handle) => decompiler.Decompile(handle), cancellationToken);
 		}
 
+		DecompilerTypeSystem GetTypeSystem(BridgedModule bridged) {
+			int generation = cache.Generation;
+			var cached = typeSystems.GetOrCreateValue(bridged);
+			lock (cached) {
+				if (cached.TypeSystem is null || cached.Generation != generation) {
+					cached.TypeSystem = new DecompilerTypeSystem(bridged.File, new DnlibAssemblyResolver(cache, bridged.Module), settings);
+					cached.Generation = generation;
+				}
+				return cached.TypeSystem;
+			}
+		}
+
 		UpstreamDecompilationResult Decompile(ModuleDef module, IMDTokenProvider definition, Func<CSharpDecompiler, EntityHandle, SyntaxTree> decompile, CancellationToken cancellationToken) {
 			var bridged = cache.Get(module);
 			int token = bridged.Tokens.GetToken(definition);
 			if (token == 0)
 				throw new ArgumentException($"{definition} isn't part of the bridged image of module '{module.Name}'");
 
-			var typeSystem = typeSystems.GetValue(bridged, b => new DecompilerTypeSystem(b.File, new DnlibAssemblyResolver(cache, module), settings));
+			var typeSystem = GetTypeSystem(bridged);
 			var decompiler = new CSharpDecompiler(typeSystem, settings) {
 				CancellationToken = cancellationToken,
 			};

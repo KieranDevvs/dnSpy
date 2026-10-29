@@ -166,6 +166,29 @@ namespace dnSpy.Decompiler.Upstream.Tests {
 			""";
 
 		/// <summary>
+		/// Every kind of definition the token maps must handle
+		/// </summary>
+		public const string Members = """
+			using System;
+			using System.Collections.Generic;
+
+			public class Container<T> where T : class {
+				public event EventHandler? Changed;
+				public T? Value { get; set; }
+				public int this[int index] => index * 2;
+				public U Convert<U>(T value, Func<T, U> converter) where U : struct => converter(value);
+				public void Raise() => Changed?.Invoke(this, EventArgs.Empty);
+				public class Nested<V> {
+					public V? Item;
+				}
+			}
+
+			public static class Constants {
+				public static int Answer() => 42;
+			}
+			""";
+
+		/// <summary>
 		/// C# 11-14 features the legacy decompiler doesn't understand
 		/// </summary>
 		public const string ModernCSharp = """"

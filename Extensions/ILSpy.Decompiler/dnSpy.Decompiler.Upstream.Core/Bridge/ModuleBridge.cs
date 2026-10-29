@@ -47,6 +47,12 @@ namespace dnSpy.Decompiler.Upstream.Bridge {
 		/// Always let dnlib rewrite the module, even if the original image looks safe to read
 		/// </summary>
 		public bool AlwaysNormalize { get; set; }
+
+		/// <summary>
+		/// Try to preserve rids when normalizing (tokens then match what dnSpy shows). Tests turn it off to
+		/// exercise the fallback.
+		/// </summary>
+		internal bool PreserveRids { get; set; } = true;
 	}
 
 	/// <summary>
@@ -64,16 +70,23 @@ namespace dnSpy.Decompiler.Upstream.Bridge {
 		public IReadOnlyList<string> NormalizeReasons { get; }
 
 		/// <summary>
+		/// Errors dnlib reported while writing the normalized image. dnlib writes something (e.g. a 0 branch
+		/// offset) instead of failing, so the IL of the affected members can be wrong in this image.
+		/// </summary>
+		public IReadOnlyList<string> WriterErrors { get; }
+
+		/// <summary>
 		/// Time it took to check and (if needed) rewrite the module
 		/// </summary>
 		public TimeSpan CreationTime { get; }
 
-		public BridgedModule(ModuleDef module, MetadataFile file, ITokenMap tokens, BridgeImageKind imageKind, IReadOnlyList<string> normalizeReasons, TimeSpan creationTime) {
+		public BridgedModule(ModuleDef module, MetadataFile file, ITokenMap tokens, BridgeImageKind imageKind, IReadOnlyList<string> normalizeReasons, IReadOnlyList<string> writerErrors, TimeSpan creationTime) {
 			Module = module;
 			File = file;
 			Tokens = tokens;
 			ImageKind = imageKind;
 			NormalizeReasons = normalizeReasons;
+			WriterErrors = writerErrors;
 			CreationTime = creationTime;
 		}
 
@@ -89,7 +102,8 @@ namespace dnSpy.Decompiler.Upstream.Bridge {
 		/// Creates an image of <paramref name="module"/> that the upstream decompiler can read
 		/// </summary>
 		/// <param name="module">Module</param>
-		/// <param name="isModified">true if the module has been edited in memory since it was loaded</param>
+		/// <param name="isModified">true if the module has been edited in memory at any time since it was loaded,
+		/// even if it has been saved since (dnSpy doesn't reload saved modules, the original image is then stale)</param>
 		/// <param name="options">Options</param>
 		public static BridgedModule Create(ModuleDef module, bool isModified, ModuleBridgeOptions options) {
 			if (module is null)
@@ -107,6 +121,10 @@ namespace dnSpy.Decompiler.Upstream.Bridge {
 				reasons.Add("Module wasn't read from metadata (created or emitted in memory)");
 
 			if (reasons.Count == 0 && mdModule is not null) {
+				if (HasMembersNotInImage(mdModule))
+					reasons.Add("Module has members that aren't in its original image");
+			}
+			if (reasons.Count == 0 && mdModule is not null) {
 				reasons.AddRange(MetadataAnomalyDetector.GetStructuralAnomalies(mdModule));
 				if (reasons.Count == 0) {
 					PEFile? file = null;
@@ -118,26 +136,30 @@ namespace dnSpy.Decompiler.Upstream.Bridge {
 						reasons.Add("System.Reflection.Metadata can't read the original image: " + ex.Message);
 					}
 					if (reasons.Count == 0 && file is not null)
-						return new BridgedModule(module, file, new IdentityTokenMap(module), BridgeImageKind.Original, Array.Empty<string>(), sw.Elapsed);
+						return new BridgedModule(module, file, new IdentityTokenMap(module), BridgeImageKind.Original, Array.Empty<string>(), Array.Empty<string>(), sw.Elapsed);
 					file?.Dispose();
 				}
 			}
 
-			return Normalize(module, reasons, sw);
+			return Normalize(module, reasons, sw, options.PreserveRids);
 		}
 
-		static BridgedModule Normalize(ModuleDef module, List<string> reasons, Stopwatch sw) {
+		static BridgedModule Normalize(ModuleDef module, List<string> reasons, Stopwatch sw, bool preserveRidsFirst) {
 			Exception? firstError = null;
 			// Preserving rids keeps tokens stable (same as what dnSpy shows), but it can fail on some
 			// obfuscated modules. Fall back to fresh rids; the token map works either way.
-			foreach (bool preserveRids in new[] { true, false }) {
+			foreach (bool preserveRids in preserveRidsFirst ? new[] { true, false } : new[] { false }) {
 				try {
-					var (bytes, metadata) = Write(module, preserveRids);
+					var logger = new CollectingLogger();
+					var (bytes, metadata) = Write(module, preserveRids, logger);
 					var map = RewriteTokenMap.Create(module, metadata);
 					var file = new PEFile(GetFileName(module), new MemoryStream(bytes, writable: false), PEStreamOptions.PrefetchEntireImage);
-					if (!preserveRids)
-						reasons.Add("Rids couldn't be preserved: " + firstError?.Message);
-					return new BridgedModule(module, file, map, BridgeImageKind.Normalized, reasons.ToArray(), sw.Elapsed);
+					var allReasons = new List<string>(reasons);
+					if (!preserveRids && preserveRidsFirst)
+						allReasons.Add("Rids couldn't be preserved: " + firstError?.Message);
+					if (logger.Errors.Count != 0)
+						allReasons.Add($"dnlib reported {logger.Errors.Count} error(s) while writing, the IL of some members may be wrong: {logger.Errors[0]}");
+					return new BridgedModule(module, file, map, BridgeImageKind.Normalized, allReasons, logger.Errors, sw.Elapsed);
 				}
 				catch (Exception ex) when (ex is not OutOfMemoryException) {
 					firstError ??= ex;
@@ -146,10 +168,10 @@ namespace dnSpy.Decompiler.Upstream.Bridge {
 			throw new ModuleBridgeException($"dnlib couldn't write a decompilable image of module '{module.Name}'", firstError);
 		}
 
-		static (byte[] bytes, Metadata metadata) Write(ModuleDef module, bool preserveRids) {
+		static (byte[] bytes, Metadata metadata) Write(ModuleDef module, bool preserveRids, ILogger logger) {
 			var options = new ModuleWriterOptions(module) {
-				// Never fail because of an invalid member, we'd rather decompile the rest
-				Logger = DummyLogger.NoThrowInstance,
+				// Don't fail because of an invalid member, we'd rather decompile the rest. Errors are collected.
+				Logger = logger,
 				WritePdb = false,
 				StrongNameKey = null,
 				StrongNamePublicKey = null,
@@ -162,6 +184,55 @@ namespace dnSpy.Decompiler.Upstream.Bridge {
 			var stream = new MemoryStream();
 			writer.Write(stream);
 			return (stream.ToArray(), writer.Metadata);
+		}
+
+		/// <summary>
+		/// Members created in memory (rid 0) or rows that don't resolve back to the same object
+		/// </summary>
+		static bool HasMembersNotInImage(ModuleDefMD module) {
+			foreach (var type in module.GetTypes()) {
+				if (!InImage(module, type))
+					return true;
+				foreach (var m in type.Methods) {
+					if (!InImage(module, m))
+						return true;
+				}
+				foreach (var f in type.Fields) {
+					if (!InImage(module, f))
+						return true;
+				}
+				foreach (var p in type.Properties) {
+					if (!InImage(module, p))
+						return true;
+				}
+				foreach (var e in type.Events) {
+					if (!InImage(module, e))
+						return true;
+				}
+			}
+			return false;
+		}
+
+		static bool InImage(ModuleDefMD module, IMDTokenProvider def) =>
+			def.MDToken.Rid != 0 && ReferenceEquals(module.ResolveToken(def.MDToken.Raw), def);
+
+		sealed class CollectingLogger : ILogger {
+			public List<string> Errors { get; } = new List<string>();
+
+			public void Log(object? sender, LoggerEvent loggerEvent, string format, params object?[] args) {
+				if (loggerEvent != LoggerEvent.Error || Errors.Count >= 100)
+					return;
+				string message;
+				try {
+					message = string.Format(format, args);
+				}
+				catch (FormatException) {
+					message = format;
+				}
+				Errors.Add(message);
+			}
+
+			public bool IgnoresEvent(LoggerEvent loggerEvent) => loggerEvent != LoggerEvent.Error;
 		}
 
 		static PEFile OpenOriginal(ModuleDefMD module) {

@@ -34,12 +34,26 @@ namespace dnSpy.Decompiler.Upstream.Bridge {
 		readonly object lockObj = new object();
 		readonly Dictionary<ModuleDef, BridgedModule> byModule = new Dictionary<ModuleDef, BridgedModule>();
 		readonly Dictionary<MetadataFile, BridgedModule> byFile = new Dictionary<MetadataFile, BridgedModule>();
+		readonly Dictionary<ModuleDef, ModuleBridgeException> failures = new Dictionary<ModuleDef, ModuleBridgeException>();
 		readonly Func<ModuleDef, bool> isModified;
+		int generation;
 
 		public ModuleBridgeOptions Options { get; }
 
+		/// <summary>
+		/// Incremented whenever a module is invalidated. Anything built from bridged modules (e.g. a type system,
+		/// which also holds the images of all referenced modules) must be rebuilt when it changes.
+		/// </summary>
+		public int Generation {
+			get {
+				lock (lockObj)
+					return generation;
+			}
+		}
+
 		/// <param name="options">Options</param>
-		/// <param name="isModified">Returns true if a module has been edited in memory</param>
+		/// <param name="isModified">Returns true if a module has been edited in memory at any time since it was
+		/// loaded, even if it has been saved since (dnSpy doesn't reload saved modules)</param>
 		public ModuleBridgeCache(ModuleBridgeOptions options, Func<ModuleDef, bool>? isModified = null) {
 			Options = options ?? throw new ArgumentNullException(nameof(options));
 			this.isModified = isModified ?? (_ => false);
@@ -48,17 +62,34 @@ namespace dnSpy.Decompiler.Upstream.Bridge {
 		public BridgedModule Get(ModuleDef module) {
 			if (module is null)
 				throw new ArgumentNullException(nameof(module));
+			int startGeneration;
 			lock (lockObj) {
 				if (byModule.TryGetValue(module, out var bridged))
 					return bridged;
+				if (failures.TryGetValue(module, out var failure))
+					throw failure;
+				startGeneration = generation;
 			}
 			// Created outside the lock: it can take a while and it may need to bridge other modules
-			var created = ModuleBridge.Create(module, isModified(module), Options);
+			BridgedModule created;
+			try {
+				created = ModuleBridge.Create(module, isModified(module), Options);
+			}
+			catch (ModuleBridgeException ex) {
+				lock (lockObj) {
+					if (generation == startGeneration)
+						failures[module] = ex;
+				}
+				throw;
+			}
 			lock (lockObj) {
 				if (byModule.TryGetValue(module, out var bridged)) {
 					created.Dispose();
 					return bridged;
 				}
+				// Invalidated while we were creating it: the result may be stale, don't cache it
+				if (generation != startGeneration)
+					return created;
 				byModule.Add(module, created);
 				byFile.Add(created.File, created);
 				return created;
@@ -70,10 +101,24 @@ namespace dnSpy.Decompiler.Upstream.Bridge {
 		/// </summary>
 		public void Invalidate(ModuleDef module) {
 			lock (lockObj) {
+				generation++;
+				failures.Remove(module);
 				if (byModule.TryGetValue(module, out var bridged)) {
 					byModule.Remove(module);
 					byFile.Remove(bridged.File);
 				}
+			}
+		}
+
+		/// <summary>
+		/// Forgets everything, e.g. when assemblies were added or removed (references may now resolve differently)
+		/// </summary>
+		public void InvalidateAll() {
+			lock (lockObj) {
+				generation++;
+				failures.Clear();
+				byModule.Clear();
+				byFile.Clear();
 			}
 		}
 

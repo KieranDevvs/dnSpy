@@ -53,7 +53,11 @@ namespace dnSpy.Decompiler.Upstream.Bridge {
 				throw new ArgumentNullException(nameof(definition));
 			if (GetModule(definition) != module)
 				return 0;
-			return (int)definition.MDToken.Raw;
+			// Members created in memory have rid 0 (or a rid that belongs to another row): they aren't in the image
+			var token = definition.MDToken;
+			if (token.Rid == 0 || !ReferenceEquals(module.ResolveToken(token.Raw), definition))
+				return 0;
+			return (int)token.Raw;
 		}
 
 		public IMDTokenProvider? Resolve(int token) {
@@ -117,7 +121,8 @@ namespace dnSpy.Decompiler.Upstream.Bridge {
 		}
 
 		void Add(WriterMetadata metadata, IMDTokenProvider definition) {
-			var token = metadata.GetToken(definition);
+			// GetToken(object) doesn't support generic parameters
+			var token = definition is GenericParam gp ? new MDToken(dnlib.DotNet.MD.Table.GenericParam, metadata.GetRid(gp)) : metadata.GetToken(definition);
 			// Rid 0: the writer didn't write it (e.g. it reported an error to the no-throw logger)
 			if (token.Rid == 0)
 				return;

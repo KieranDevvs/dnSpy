@@ -68,6 +68,14 @@ namespace dnSpy.Decompiler.Upstream.Tests.Infrastructure {
 		public int SharedLocationsSameCode { get; set; }
 		public List<string> WrongCode { get; } = new List<string>();
 
+		/// <summary>
+		/// Hoisted user locals (state machine fields &lt;name&gt;5__N) and how many of them the debug info maps,
+		/// with the original name
+		/// </summary>
+		public int HoistedLocals { get; set; }
+		public int HoistedLocalsMapped { get; set; }
+		public int HoistedLocalsNamed { get; set; }
+
 		public int PdbLocals { get; set; }
 		public int PdbLocalsMapped { get; set; }
 
@@ -75,7 +83,7 @@ namespace dnSpy.Decompiler.Upstream.Tests.Infrastructure {
 
 		public override string ToString() =>
 			$"{Method.FullName}: errors={Errors.Count}, coverage={CoveredInstructions}/{Instructions}, " +
-			$"pdbSPs={PdbSequencePointsMatched}/{PdbSequencePoints}, sameCode={SharedLocationsSameCode}/{SharedLocations}, userCodeCoverage={PdbUserCodeInstructionsCovered}/{PdbUserCodeInstructions}, pdbLocals={PdbLocalsMapped}/{PdbLocals}, nonEmptyStackStarts={NonEmptyStackStarts}";
+			$"pdbSPs={PdbSequencePointsMatched}/{PdbSequencePoints}, hoisted={HoistedLocalsMapped}/{HoistedLocals} (named {HoistedLocalsNamed}), sameCode={SharedLocationsSameCode}/{SharedLocations}, userCodeCoverage={PdbUserCodeInstructionsCovered}/{PdbUserCodeInstructions}, pdbLocals={PdbLocalsMapped}/{PdbLocals}, nonEmptyStackStarts={NonEmptyStackStarts}";
 	}
 
 	/// <summary>
@@ -125,10 +133,44 @@ namespace dnSpy.Decompiler.Upstream.Tests.Infrastructure {
 				}
 			}
 
+			foreach (var p in info.Parameters) {
+				var method = p.Parameter.Method;
+				if (method != info.Method && method != info.KickoffMethod)
+					report.Errors.Add($"Parameter '{p.Name}' belongs to another method ({method.FullName})");
+				else if (!p.Parameter.IsHiddenThisParameter && !string.IsNullOrEmpty(p.Parameter.Name) && p.Parameter.Name != p.Name) {
+					// The decompiler may rename a parameter (e.g. to avoid a conflict); then the new name must be
+					// the one used in the method's code
+					var methodText = info.HasSpan ? text.Substring(info.Span.Start, info.Span.Length) : text;
+					if (!System.Text.RegularExpressions.Regex.IsMatch(methodText, @"\b" + System.Text.RegularExpressions.Regex.Escape(p.Name) + @"\b"))
+						report.Errors.Add($"Parameter #{p.Parameter.Index} is called '{p.Parameter.Name}' but the debug info says '{p.Name}', which isn't used in the method's code");
+				}
+			}
+
+			if (info.KickoffMethod is not null && info.Method.DeclaringType is TypeDef stateMachine) {
+				var hoistedByField = GetLocals(info.Scope).Where(l => l.HoistedField is not null).GroupBy(l => l.HoistedField!).ToDictionary(g => g.Key, g => g.First());
+				foreach (var field in stateMachine.Fields) {
+					var m = System.Text.RegularExpressions.Regex.Match(field.Name.String, @"^<([A-Za-z_][A-Za-z0-9_]*)>5__\d+$");
+					if (!m.Success)
+						continue;
+					report.HoistedLocals++;
+					if (hoistedByField.TryGetValue(field, out var local)) {
+						report.HoistedLocalsMapped++;
+						if (local.Name == m.Groups[1].Value)
+							report.HoistedLocalsNamed++;
+					}
+				}
+			}
+
 			report.Instructions = stackDepths.Count;
 			report.CoveredInstructions = stackDepths.Keys.Count(o => ilOwner.ContainsKey(o));
 
 			if (pdb is not null) {
+				if (pdb.KickoffMethodToken != 0 && info.KickoffMethod?.MDToken.ToInt32() != pdb.KickoffMethodToken)
+					report.Errors.Add($"Kickoff method is {info.KickoffMethod?.FullName ?? "null"}, the PDB says 0x{pdb.KickoffMethodToken:X8}");
+				bool asyncVoid = info.KickoffMethod?.MethodSig?.RetType.RemovePinnedAndModifiers().GetElementType() == ElementType.Void;
+				if (asyncVoid && pdb.CatchHandlerOffset is int catchHandler && info.AsyncInfo?.CatchHandlerOffset != (uint)catchHandler)
+					report.Errors.Add($"Async void catch handler is IL_{info.AsyncInfo?.CatchHandlerOffset:X4}, the PDB says IL_{catchHandler:X4}");
+
 				var starts = new HashSet<uint>(info.Statements.Select(s => s.ILSpan.Start));
 				report.PdbSequencePoints = pdb.SequencePointOffsets.Count;
 				report.PdbSequencePointsMatched = pdb.SequencePointOffsets.Count(o => starts.Contains((uint)o));
@@ -242,7 +284,9 @@ namespace dnSpy.Decompiler.Upstream.Tests.Infrastructure {
 			var b = Words(decompiled, variableNames);
 			if (a.Count == 0 || b.Count == 0)
 				return null;
-			return a.Overlaps(b);
+			// At least half of the smaller set must be shared (one shared name like 'Console' isn't enough)
+			int shared = a.Count(w => b.Contains(w));
+			return shared * 2 >= System.Math.Min(a.Count, b.Count);
 		}
 
 		static bool IsBrace(string s) => s.Trim() is "{" or "}";

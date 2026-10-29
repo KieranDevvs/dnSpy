@@ -136,6 +136,10 @@ namespace dnSpy.Decompiler.Upstream.DebugInfo {
 		}
 
 		static IEnumerable<SourceLocal> GetLocals(ILFunction function, CilBody? body, ModuleBridgeCache cache) {
+			// Upstream can split one IL slot into several variables (e.g. a reused slot in optimized code). The
+			// scope is method-wide, so keep one name per slot like upstream's own PDB writer does.
+			var seenSlots = new HashSet<int>();
+			var seenFields = new HashSet<FieldDef>();
 			foreach (var v in function.Variables) {
 				if (v.Kind == VariableKind.Parameter || v.Name is null)
 					continue;
@@ -144,11 +148,11 @@ namespace dnSpy.Decompiler.Upstream.DebugInfo {
 				if (v.IsRefReadOnly)
 					flags |= SourceVariableFlags.ReadOnlyReference;
 				if (v.StateMachineField is not null) {
-					if (cache.ToDnlib(v.StateMachineField) is FieldDef hoistedField)
+					if (cache.ToDnlib(v.StateMachineField) is FieldDef hoistedField && seenFields.Add(hoistedField))
 						yield return new SourceLocal(null, v.Name, hoistedField, flags);
 					continue;
 				}
-				if (v.Index is int index && body is not null && (uint)index < (uint)body.Variables.Count && IsILLocal(v.Kind)) {
+				if (v.Index is int index && body is not null && (uint)index < (uint)body.Variables.Count && IsILLocal(v.Kind) && seenSlots.Add(index)) {
 					var local = body.Variables[index];
 					yield return new SourceLocal(local, v.Name, local.Type, flags);
 				}
@@ -165,12 +169,14 @@ namespace dnSpy.Decompiler.Upstream.DebugInfo {
 
 		static SourceParameter[] GetParameters(ILFunction function, MethodDef method, ModuleBridgeCache cache) {
 			var list = new List<SourceParameter>();
+			var seenParameters = new HashSet<int>();
 			foreach (var v in function.Variables) {
 				if (v.Kind != VariableKind.Parameter || v.Index is not int index || v.Name is null)
 					continue;
-				// Upstream: -1 is 'this'. dnlib: index 0 is 'this' if the method has a 'this' parameter
-				int dnlibIndex = method.HasThis ? index + 1 : index;
-				if ((uint)dnlibIndex >= (uint)method.Parameters.Count)
+				// Upstream: -1 is the hidden 'this' parameter. dnlib: Parameters includes a hidden 'this' parameter at
+				// index 0 only if the signature has one (HasThis without ExplicitThis), see MethodSigIndexBase.
+				int dnlibIndex = index + method.Parameters.MethodSigIndexBase;
+				if ((uint)dnlibIndex >= (uint)method.Parameters.Count || !seenParameters.Add(dnlibIndex))
 					continue;
 				var parameter = method.Parameters[dnlibIndex];
 				if (v.StateMachineField is not null && cache.ToDnlib(v.StateMachineField) is FieldDef hoistedField)
@@ -185,33 +191,67 @@ namespace dnSpy.Decompiler.Upstream.DebugInfo {
 			var info = function.AsyncDebugInfo;
 			var stepInfos = info.Awaits.IsDefault ? Array.Empty<AsyncStepInfo>() :
 				info.Awaits.Select(a => new AsyncStepInfo((uint)a.YieldOffset, moveNext, (uint)a.ResumeOffset)).ToArray();
+			// dnSpy only uses it for async void methods
 			bool returnsVoid = kickoffMethod?.MethodSig?.RetType.RemovePinnedAndModifiers().GetElementType() == ElementType.Void;
 			uint catchHandlerOffset = returnsVoid && info.CatchHandlerOffset >= 0 ? (uint)info.CatchHandlerOffset : uint.MaxValue;
-			return new AsyncMethodDebugInfo(stepInfos, FindBuilderField(moveNext.DeclaringType), catchHandlerOffset, FindSetResultOffset(moveNext));
+			var builderField = FindBuilderField(kickoffMethod, moveNext.DeclaringType);
+			return new AsyncMethodDebugInfo(stepInfos, builderField, catchHandlerOffset, FindSetResultOffset(moveNext, builderField));
 		}
 
-		static FieldDef? FindBuilderField(TypeDef? stateMachineType) {
-			if (stateMachineType is null)
-				return null;
-			foreach (var field in stateMachineType.Fields) {
-				if (field.IsStatic)
-					continue;
-				var typeName = field.FieldType.RemovePinnedAndModifiers().ToTypeDefOrRef()?.Name.String;
-				if (typeName is not null && typeName.Contains("MethodBuilder"))
-					return field;
+		/// <summary>
+		/// The builder field is the one whose Start() the kickoff method calls:
+		/// stateMachine.&lt;&gt;t__builder.Start(ref stateMachine)
+		/// </summary>
+		static FieldDef? FindBuilderField(MethodDef? kickoffMethod, TypeDef? stateMachineType) {
+			var instrs = kickoffMethod?.Body?.Instructions;
+			if (instrs is not null) {
+				for (int i = 0; i < instrs.Count; i++) {
+					var instr = instrs[i];
+					if (instr.OpCode.Code != Code.Call || instr.Operand is not dnlib.DotNet.IMethod called || called.Name != "Start")
+						continue;
+					// ldloca stateMachine; ldflda builder; ldloca stateMachine; call Start
+					for (int j = i - 1; j >= Math.Max(0, i - 4); j--) {
+						if ((instrs[j].OpCode.Code == Code.Ldflda || instrs[j].OpCode.Code == Code.Ldfld) && instrs[j].Operand is dnlib.DotNet.IField f &&
+							f.ResolveFieldDef() is FieldDef fd && fd.DeclaringType == stateMachineType)
+							return fd;
+					}
+				}
 			}
-			return null;
+			// Fall back to the C# compiler's name
+			return stateMachineType?.Fields.FirstOrDefault(f => f.Name == "<>t__builder");
 		}
 
-		static uint FindSetResultOffset(MethodDef moveNext) {
-			var body = moveNext.Body;
-			if (body is null)
+		/// <summary>
+		/// Offset of the first instruction of this.&lt;&gt;t__builder.SetResult(...)
+		/// </summary>
+		static uint FindSetResultOffset(MethodDef moveNext, FieldDef? builderField) {
+			var instrs = moveNext.Body?.Instructions;
+			if (instrs is null || builderField is null)
 				return uint.MaxValue;
-			foreach (var instr in body.Instructions) {
-				if ((instr.OpCode.Code == Code.Call || instr.OpCode.Code == Code.Callvirt) && instr.Operand is dnlib.DotNet.IMethod m && m.Name == "SetResult")
-					return instr.Offset;
+			var offsets = GetOffsets(instrs);
+			for (int i = 0; i < instrs.Count; i++) {
+				var instr = instrs[i];
+				if (instr.OpCode.Code != Code.Call || instr.Operand is not dnlib.DotNet.IMethod called || called.Name != "SetResult")
+					continue;
+				// ldarg.0; ldflda builder; [ldloc result]; call SetResult
+				for (int j = i - 1; j >= Math.Max(0, i - 3); j--) {
+					if (instrs[j].OpCode.Code == Code.Ldflda && instrs[j].Operand is dnlib.DotNet.IField f && f.ResolveFieldDef() == builderField) {
+						int start = j > 0 && instrs[j - 1].OpCode.Code == Code.Ldarg_0 ? j - 1 : j;
+						return offsets[start];
+					}
+				}
 			}
 			return uint.MaxValue;
+		}
+
+		static uint[] GetOffsets(IList<Instruction> instrs) {
+			var offsets = new uint[instrs.Count];
+			uint offset = 0;
+			for (int i = 0; i < instrs.Count; i++) {
+				offsets[i] = offset;
+				offset += (uint)instrs[i].GetSize();
+			}
+			return offsets;
 		}
 
 		sealed class Spans {

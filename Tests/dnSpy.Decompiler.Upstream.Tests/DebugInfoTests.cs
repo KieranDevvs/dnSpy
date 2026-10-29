@@ -54,6 +54,7 @@ namespace dnSpy.Decompiler.Upstream.Tests {
 		sealed class EngineRun {
 			public string Engine { get; }
 			public List<DebugInfoReport> Reports { get; } = new List<DebugInfoReport>();
+			public Dictionary<uint, MethodDebugInfo> InfosByMethod { get; } = new Dictionary<uint, MethodDebugInfo>();
 			public List<string> MissingDebugInfo { get; } = new List<string>();
 			public List<string> Exceptions { get; } = new List<string>();
 			public EngineRun(string engine) => Engine = engine;
@@ -65,6 +66,7 @@ namespace dnSpy.Decompiler.Upstream.Tests {
 					$"compiler breakpoint locations={Percent(Sum(r => r.PdbSequencePointsMatched), Sum(r => r.PdbSequencePoints)),-17}" +
 					$"same code at shared breakpoints={Percent(Sum(r => r.SharedLocationsSameCode), Sum(r => r.SharedLocations)),-17}" +
 					$"locals mapped={Percent(Sum(r => r.PdbLocalsMapped), Sum(r => r.PdbLocals)),-17}" +
+					$"hoisted locals mapped/named={Sum(r => r.HoistedLocalsMapped)}/{Sum(r => r.HoistedLocalsNamed)} of {Sum(r => r.HoistedLocals)}  " +
 					$"non-empty-stack starts={Sum(r => r.NonEmptyStackStarts)}";
 			}
 		}
@@ -82,7 +84,11 @@ namespace dnSpy.Decompiler.Upstream.Tests {
 					continue;
 				}
 				foreach (var info in result.infos) {
-					methodsWithDebugInfo.Add(info.Method.MDToken.Raw);
+					// An empty MethodDebugInfo doesn't let the debugger map anything
+					if (info.Statements.Length != 0)
+						methodsWithDebugInfo.Add(info.Method.MDToken.Raw);
+					if (!run.InfosByMethod.TryGetValue(info.Method.MDToken.Raw, out var existing) || existing.Statements.Length < info.Statements.Length)
+						run.InfosByMethod[info.Method.MDToken.Raw] = info;
 					pdb.TryGetValue((int)info.Method.MDToken.Raw, out var pdbInfo);
 					run.Reports.Add(DebugInfoValidator.Validate(info, result.text, pdbInfo, source));
 				}
@@ -141,9 +147,30 @@ namespace dnSpy.Decompiler.Upstream.Tests {
 			log.WriteLine("  " + upstream.Summary());
 			log.WriteLine("  " + legacy.Summary());
 
+			// Async builder field and SetResult offset: the legacy engine is the reference
+			var asyncMismatches = new List<string>();
+			foreach (var kv in upstream.InfosByMethod) {
+				if (kv.Value.AsyncInfo is not { } up || !legacy.InfosByMethod.TryGetValue(kv.Key, out var legacyInfo) || legacyInfo.AsyncInfo is not { } old)
+					continue;
+				// Each engine has its own copy of the module: compare tokens
+				if (up.BuilderField?.MDToken != old.BuilderField?.MDToken)
+					asyncMismatches.Add($"{kv.Value.Method.FullName}: builder field {up.BuilderField} vs legacy {old.BuilderField}");
+				if (up.SetResultOffset != old.SetResultOffset)
+					asyncMismatches.Add($"{kv.Value.Method.FullName}: SetResult offset IL_{up.SetResultOffset:X4} vs legacy IL_{old.SetResultOffset:X4}");
+			}
+			foreach (var m in asyncMismatches)
+				log.WriteLine("  ASYNC MISMATCH " + m);
+
 			Assert.Empty(upstream.Exceptions);
 			Assert.Empty(upstream.MissingDebugInfo);
 			Assert.Empty(upstream.Reports.SelectMany(r => r.Errors));
+			Assert.Empty(asyncMismatches);
+			// Regression guards (measured Oct 2026: coverage 63-80%, shared breakpoint locations 53-68%)
+			Assert.True(Ratio(upstream.Reports.Sum(r => r.PdbUserCodeInstructionsCovered), upstream.Reports.Sum(r => r.PdbUserCodeInstructions)) >= 0.55, "User code IL coverage dropped below 55%");
+			Assert.True(Ratio(upstream.Reports.Sum(r => r.PdbSequencePointsMatched), upstream.Reports.Sum(r => r.PdbSequencePoints)) >= 0.45, "Breakpoint locations shared with the compiler dropped below 45%");
+			int hoisted = upstream.Reports.Sum(r => r.HoistedLocals);
+			if (hoisted != 0)
+				Assert.True(Ratio(upstream.Reports.Sum(r => r.HoistedLocalsNamed), hoisted) >= 0.5, "Less than half of the hoisted locals are mapped with their name");
 			// A statement at a compiler breakpoint location that's about different code means a breakpoint on it
 			// would stop in the wrong place
 			Assert.Empty(upstream.Reports.SelectMany(r => r.WrongCode));
@@ -167,9 +194,15 @@ namespace dnSpy.Decompiler.Upstream.Tests {
 			var report = DebugInfoValidator.Validate(moveNext, result.Text, null);
 			foreach (var e in report.Errors)
 				log.WriteLine("ERROR " + e);
+			foreach (var info in result.MethodDebugInfos) {
+				foreach (var e in DebugInfoValidator.Validate(info, result.Text, null).Errors)
+					log.WriteLine($"ERROR {info.Method.FullName}: {e}");
+			}
 			Assert.Empty(report.Errors);
 			Assert.Empty(result.MethodDebugInfos.SelectMany(i => DebugInfoValidator.Validate(i, result.Text, null).Errors));
 		}
+
+		static double Ratio(int a, int b) => b == 0 ? 1 : (double)a / b;
 
 		static string Percent(int a, int b) => b == 0 ? "n/a" : $"{100.0 * a / b:0.0}% ({a}/{b})";
 	}
