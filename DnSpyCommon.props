@@ -56,6 +56,8 @@
     <NewtonsoftJsonVersion>13.0.4</NewtonsoftJsonVersion>
     <OokiiDialogsWpfVersion>5.0.1</OokiiDialogsWpfVersion>
     <RoslynVersion>5.9.0</RoslynVersion>
+    <!-- Upstream ILSpy decompiler engine (https://www.nuget.org/packages/ICSharpCode.Decompiler) -->
+    <ILSpyDecompilerVersion>11.2.0.10050</ILSpyDecompilerVersion>
     <NuGetVersion>7.9.0</NuGetVersion>
     <DbgShimVersion>9.0.661903</DbgShimVersion>
     <DotNetPackageVersion>10.0.11</DotNetPackageVersion>

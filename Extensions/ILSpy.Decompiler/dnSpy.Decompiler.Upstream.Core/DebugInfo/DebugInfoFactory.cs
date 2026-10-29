@@ -1,0 +1,188 @@
+/*
+    Copyright (C) 2026 dnSpy contributors
+
+    This file is part of dnSpy
+
+    dnSpy is free software: you can redistribute it and/or modify
+    it under the terms of the GNU General Public License as published by
+    the Free Software Foundation, either version 3 of the License, or
+    (at your option) any later version.
+
+    dnSpy is distributed in the hope that it will be useful,
+    but WITHOUT ANY WARRANTY; without even the implied warranty of
+    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+    GNU General Public License for more details.
+
+    You should have received a copy of the GNU General Public License
+    along with dnSpy.  If not, see <http://www.gnu.org/licenses/>.
+*/
+
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using dnlib.DotNet;
+using dnlib.DotNet.Emit;
+using dnSpy.Contracts.Decompiler;
+using dnSpy.Decompiler.Upstream.Bridge;
+using dnSpy.Decompiler.Upstream.Output;
+using ICSharpCode.Decompiler.CSharp;
+using ICSharpCode.Decompiler.CSharp.Syntax;
+using ICSharpCode.Decompiler.IL;
+using ICSharpCode.Decompiler.TypeSystem;
+using UpstreamMethod = ICSharpCode.Decompiler.TypeSystem.IMethod;
+using UpstreamSequencePoint = ICSharpCode.Decompiler.DebugInfo.SequencePoint;
+
+namespace dnSpy.Decompiler.Upstream.DebugInfo {
+	/// <summary>
+	/// Converts the upstream decompiler's debug info (sequence points, variables, async info) to dnSpy's
+	/// <see cref="MethodDebugInfo"/>, which the debugger uses for breakpoints, stepping and locals.
+	/// </summary>
+	static class DebugInfoFactory {
+		public static List<MethodDebugInfo> Create(SyntaxTree syntaxTree, Dictionary<ILFunction, List<UpstreamSequencePoint>> sequencePoints,
+			TrackingTextOutput output, ModuleBridgeCache cache, int decompilerSettingsVersion) {
+			var methodSpans = GetMethodSpans(syntaxTree, output);
+			var result = new List<MethodDebugInfo>(sequencePoints.Count);
+			foreach (var kv in sequencePoints) {
+				var info = Create(kv.Key, kv.Value, output, cache, methodSpans, decompilerSettingsVersion);
+				if (info is not null)
+					result.Add(info);
+			}
+			return result;
+		}
+
+		static MethodDebugInfo? Create(ILFunction function, List<UpstreamSequencePoint> points, TrackingTextOutput output,
+			ModuleBridgeCache cache, Dictionary<UpstreamMethod, (int start, int end)> methodSpans, int decompilerSettingsVersion) {
+			if (function.Method is null)
+				return null;
+			// IL offsets are offsets in the method whose body was decompiled: MoveNext() for async/iterator methods
+			var bodyMethod = cache.ToDnlib(function.MoveNextMethod ?? function.Method) as MethodDef;
+			if (bodyMethod is null)
+				return null;
+			MethodDef? kickoffMethod = null;
+			if (function.MoveNextMethod is not null)
+				kickoffMethod = cache.ToDnlib(function.Method) as MethodDef;
+
+			var kind = function.IsAsync ? StateMachineKind.AsyncMethod :
+				function.IsIterator ? StateMachineKind.IteratorMethod : StateMachineKind.None;
+			var builder = new MethodDebugInfoBuilder(decompilerSettingsVersion, kind, bodyMethod, kickoffMethod) {
+				CompilerName = null,
+			};
+
+			foreach (var sp in points) {
+				if (sp.IsHidden || sp.EndOffset <= sp.Offset)
+					continue;
+				int start = output.ToOffset(sp.StartLine, sp.StartColumn);
+				int end = output.ToOffset(sp.EndLine, sp.EndColumn);
+				if (end < start)
+					continue;
+				builder.Add(new SourceStatement(ILSpan.FromBounds((uint)sp.Offset, (uint)sp.EndOffset), TextSpan.FromBounds(start, end)));
+			}
+
+			var body = bodyMethod.Body;
+			builder.Scope.Span = ILSpan.FromBounds(0, (uint)(body is null ? function.CodeSize : body.GetCodeSize()));
+			builder.Scope.Locals.AddRange(GetLocals(function, body, cache));
+			builder.Parameters = GetParameters(function, kickoffMethod ?? bodyMethod, cache);
+			if (function.IsAsync)
+				builder.AsyncInfo = GetAsyncInfo(function, bodyMethod, kickoffMethod);
+
+			if (methodSpans.TryGetValue(function.Method, out var span)) {
+				builder.StartPosition = span.start;
+				builder.EndPosition = span.end;
+			}
+			return builder.Create();
+		}
+
+		static IEnumerable<SourceLocal> GetLocals(ILFunction function, CilBody? body, ModuleBridgeCache cache) {
+			foreach (var v in function.Variables) {
+				if (v.Kind == VariableKind.Parameter || v.Name is null)
+					continue;
+				// SourceLocal derives DecompilerGenerated itself (no IL local and no hoisted field)
+				var flags = SourceVariableFlags.None;
+				if (v.IsRefReadOnly)
+					flags |= SourceVariableFlags.ReadOnlyReference;
+				if (v.StateMachineField is not null) {
+					if (cache.ToDnlib(v.StateMachineField) is FieldDef hoistedField)
+						yield return new SourceLocal(null, v.Name, hoistedField, flags);
+					continue;
+				}
+				if (v.Index is int index && body is not null && (uint)index < (uint)body.Variables.Count && IsILLocal(v.Kind)) {
+					var local = body.Variables[index];
+					yield return new SourceLocal(local, v.Name, local.Type, flags);
+				}
+			}
+		}
+
+		static bool IsILLocal(VariableKind kind) =>
+			kind switch {
+				VariableKind.Local or VariableKind.PinnedLocal or VariableKind.PinnedRegionLocal or VariableKind.UsingLocal or
+				VariableKind.ForeachLocal or VariableKind.InitializerTarget or VariableKind.ExceptionLocal or VariableKind.DisplayClassLocal or
+				VariableKind.PatternLocal => true,
+				_ => false,
+			};
+
+		static SourceParameter[] GetParameters(ILFunction function, MethodDef method, ModuleBridgeCache cache) {
+			var list = new List<SourceParameter>();
+			foreach (var v in function.Variables) {
+				if (v.Kind != VariableKind.Parameter || v.Index is not int index || v.Name is null)
+					continue;
+				// Upstream: -1 is 'this'. dnlib: index 0 is 'this' if the method has a 'this' parameter
+				int dnlibIndex = method.HasThis ? index + 1 : index;
+				if ((uint)dnlibIndex >= (uint)method.Parameters.Count)
+					continue;
+				var parameter = method.Parameters[dnlibIndex];
+				if (v.StateMachineField is not null && cache.ToDnlib(v.StateMachineField) is FieldDef hoistedField)
+					list.Add(new SourceParameter(parameter, v.Name, hoistedField, SourceVariableFlags.None));
+				else
+					list.Add(new SourceParameter(parameter, v.Name, parameter.Type, SourceVariableFlags.None));
+			}
+			return list.ToArray();
+		}
+
+		static AsyncMethodDebugInfo GetAsyncInfo(ILFunction function, MethodDef moveNext, MethodDef? kickoffMethod) {
+			var info = function.AsyncDebugInfo;
+			var stepInfos = info.Awaits.IsDefault ? Array.Empty<AsyncStepInfo>() :
+				info.Awaits.Select(a => new AsyncStepInfo((uint)a.YieldOffset, moveNext, (uint)a.ResumeOffset)).ToArray();
+			bool returnsVoid = kickoffMethod?.MethodSig?.RetType.RemovePinnedAndModifiers().GetElementType() == ElementType.Void;
+			uint catchHandlerOffset = returnsVoid && info.CatchHandlerOffset >= 0 ? (uint)info.CatchHandlerOffset : uint.MaxValue;
+			return new AsyncMethodDebugInfo(stepInfos, FindBuilderField(moveNext.DeclaringType), catchHandlerOffset, FindSetResultOffset(moveNext));
+		}
+
+		static FieldDef? FindBuilderField(TypeDef? stateMachineType) {
+			if (stateMachineType is null)
+				return null;
+			foreach (var field in stateMachineType.Fields) {
+				if (field.IsStatic)
+					continue;
+				var typeName = field.FieldType.RemovePinnedAndModifiers().ToTypeDefOrRef()?.Name.String;
+				if (typeName is not null && typeName.Contains("MethodBuilder"))
+					return field;
+			}
+			return null;
+		}
+
+		static uint FindSetResultOffset(MethodDef moveNext) {
+			var body = moveNext.Body;
+			if (body is null)
+				return uint.MaxValue;
+			foreach (var instr in body.Instructions) {
+				if ((instr.OpCode.Code == Code.Call || instr.OpCode.Code == Code.Callvirt) && instr.Operand is dnlib.DotNet.IMethod m && m.Name == "SetResult")
+					return instr.Offset;
+			}
+			return uint.MaxValue;
+		}
+
+		static Dictionary<UpstreamMethod, (int start, int end)> GetMethodSpans(SyntaxTree syntaxTree, TrackingTextOutput output) {
+			var dict = new Dictionary<UpstreamMethod, (int, int)>();
+			foreach (var node in syntaxTree.Descendants) {
+				if (node is not EntityDeclaration decl)
+					continue;
+				if (decl.GetSymbol() is not UpstreamMethod method)
+					continue;
+				if (decl.StartLocation.IsEmpty || decl.EndLocation.IsEmpty)
+					continue;
+				dict[method] = (output.ToOffset(decl.StartLocation.Line, decl.StartLocation.Column), output.ToOffset(decl.EndLocation.Line, decl.EndLocation.Column));
+			}
+			return dict;
+		}
+	}
+}
