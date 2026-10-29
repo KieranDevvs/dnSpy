@@ -137,12 +137,11 @@ namespace dnSpy.Decompiler.Upstream.Tests.Infrastructure {
 				var method = p.Parameter.Method;
 				if (method != info.Method && method != info.KickoffMethod)
 					report.Errors.Add($"Parameter '{p.Name}' belongs to another method ({method.FullName})");
-				else if (!p.Parameter.IsHiddenThisParameter && !string.IsNullOrEmpty(p.Parameter.Name) && p.Parameter.Name != p.Name) {
-					// The decompiler may rename a parameter (e.g. to avoid a conflict); then the new name must be
-					// the one used in the method's code
-					var methodText = info.HasSpan ? text.Substring(info.Span.Start, info.Span.Length) : text;
-					if (!System.Text.RegularExpressions.Regex.IsMatch(methodText, @"\b" + System.Text.RegularExpressions.Regex.Escape(p.Name) + @"\b"))
-						report.Errors.Add($"Parameter #{p.Parameter.Index} is called '{p.Parameter.Name}' but the debug info says '{p.Name}', which isn't used in the method's code");
+				else if (!p.Parameter.IsHiddenThisParameter && p.Parameter.Name != p.Name &&
+					p.Parameter.Method.Parameters.Any(other => other != p.Parameter && !other.IsHiddenThisParameter && other.Name == p.Name)) {
+					// The decompiler may rename parameters (conflicts, discards, unnamed parameters), but a name that
+					// belongs to another parameter means the index mapping is off
+					report.Errors.Add($"Parameter #{p.Parameter.Index} '{p.Parameter.Name}' is shown as '{p.Name}', the name of another parameter");
 				}
 			}
 
