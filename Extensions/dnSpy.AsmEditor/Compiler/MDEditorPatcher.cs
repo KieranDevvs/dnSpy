@@ -31,6 +31,7 @@ namespace dnSpy.AsmEditor.Compiler {
 		None							= 0,
 		UpdateTypeReferences			= 0x0000_0001,
 		AllowInternalAccess				= 0x0000_0002,
+		UpdateAssemblyRefVersions		= 0x0000_0004,
 	}
 
 	unsafe struct MDEditorPatcher {
@@ -42,12 +43,14 @@ namespace dnSpy.AsmEditor.Compiler {
 		readonly List<byte> sigBuilder;
 		readonly MetadataEditor mdEditor;
 		readonly MDEditorPatcherOptions options;
+		readonly Func<AssemblyRef, Version?>? getResolvedVersion;
 		uint tempAssemblyRefRid;
 
 		bool UpdateTypeReferences => (options & MDEditorPatcherOptions.UpdateTypeReferences) != 0;
 		bool AllowInternalAccess => (options & MDEditorPatcherOptions.AllowInternalAccess) != 0;
+		bool UpdateAssemblyRefVersions => (options & MDEditorPatcherOptions.UpdateAssemblyRefVersions) != 0;
 
-		public MDEditorPatcher(RawModuleBytes moduleData, MetadataEditor mdEditor, IAssembly tempAssembly, TypeDef? nonNestedEditedType, MDEditorPatcherOptions options) {
+		public MDEditorPatcher(RawModuleBytes moduleData, MetadataEditor mdEditor, IAssembly tempAssembly, TypeDef? nonNestedEditedType, MDEditorPatcherOptions options, Func<AssemblyRef, Version?>? getResolvedVersion = null) {
 			this.moduleData = moduleData;
 			peFile = (byte*)moduleData.Pointer;
 			this.tempAssembly = tempAssembly;
@@ -56,6 +59,7 @@ namespace dnSpy.AsmEditor.Compiler {
 			sigBuilder = new List<byte>();
 			this.mdEditor = mdEditor;
 			this.options = options;
+			this.getResolvedVersion = getResolvedVersion;
 			tempAssemblyRefRid = 0;
 		}
 
@@ -74,6 +78,30 @@ namespace dnSpy.AsmEditor.Compiler {
 			}
 			if (AllowInternalAccess)
 				AddInternalsVisibleToAttribute();
+			if (UpdateAssemblyRefVersions && getResolvedVersion is not null)
+				UpdateAssemblyRefVersionsCore(module, getResolvedVersion);
+		}
+
+		/// <summary>
+		/// A reference to an older version than the compiler gets (e.g. netstandard 2.0 when it gets 2.1) is one it has
+		/// to unify, and then Roslyn checks the generic types of the module in a way that can recurse until the process
+		/// dies (stack overflow): a generic interface of the edited module that the edited type implements with itself,
+		/// e.g. 'class JToken : IJEnumerable&lt;JToken&gt;' in Newtonsoft.Json. The references get the versions that the
+		/// compiler gets.
+		/// </summary>
+		void UpdateAssemblyRefVersionsCore(ModuleDef module, Func<AssemblyRef, Version?> getResolvedVersion) {
+			foreach (var asmRef in module.GetAssemblyRefs()) {
+				if (asmRef.Rid == 0 || asmRef.Version is not Version version)
+					continue;
+				var resolved = getResolvedVersion(asmRef);
+				if (resolved is null || resolved <= version)
+					continue;
+				var row = mdEditor.TablesHeap.AssemblyRefTable.Get(asmRef.Rid);
+				var newRow = new RawAssemblyRefRow((ushort)Math.Max(0, resolved.Major), (ushort)Math.Max(0, resolved.Minor),
+					(ushort)Math.Max(0, resolved.Build), (ushort)Math.Max(0, resolved.Revision),
+					row.Flags, row.PublicKeyOrToken, row.Name, row.Locale, row.HashValue);
+				mdEditor.TablesHeap.AssemblyRefTable.Set(asmRef.Rid, ref newRow);
+			}
 		}
 
 		void DeleteTypeDef(MetadataEditor mdEditor, TypeDef nonNestedTypeDef) {

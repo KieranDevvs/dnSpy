@@ -240,7 +240,7 @@ namespace dnSpy.Decompiler.Upstream.Tests {
 			}
 			Report($"{engine} {program} {(optimize ? "Release" : "Debug")} {kind}", targets.Count, failures);
 			if (engine == UpstreamStubs && targets.Count != 0)
-				Assert.True(((UpstreamCSharpLanguage)decompiler).StubbedImages > 0, "The decompiled image always had all the code");
+				Assert.True(((UpstreamCSharpLanguage)decompiler).ImagesWithoutUnusedBodies > 0, "The decompiled image always had all the code");
 			return failures;
 		}
 
@@ -452,6 +452,43 @@ namespace dnSpy.Decompiler.Upstream.Tests {
 			var compiled = new CompiledProgram("EditOld", image.ToArray(), Array.Empty<byte>(), optimized: false);
 			Assert.DoesNotContain(compiled.Load().CustomAttributes, a => a.TypeFullName == refSafetyRules);
 			var outcome = RunEdit(GetDecompiler(Upstream), EditKind.EditAssembly, compiled, "EditOld", RunImage(compiled.Image, "EditOld"), 0, check: CheckAssemblyAttributes(compiled));
+			Assert.Null(outcome?.Description);
+		}
+
+		const string SelfReferencingProgram = """
+			using System.Collections;
+			using System.Collections.Generic;
+			namespace EditSelf {
+				public interface INode<out T> : IEnumerable<T> where T : Node { }
+				public class Node : INode<Node> {
+					public int Value;
+					public IEnumerator<Node> GetEnumerator() { yield return this; }
+					IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
+					public int Twice() => Value * 2;
+				}
+				public static class Program {
+					public static string Run() => new Node { Value = 21 }.Twice().ToString();
+				}
+			}
+			""";
+
+		/// <summary>
+		/// A module that references older versions of assemblies than the compiler gets (e.g. a netstandard 2.0 library
+		/// on .NET 10): Roslyn recursed until the process died (stack overflow) on 'class Node : INode&lt;Node&gt;'. (If this
+		/// fails, the test host crashes.)
+		/// </summary>
+		[Fact]
+		public void EditMethod_ModuleReferencingOlderAssemblies_Compiles() {
+			var module = TestCompiler.Compile("EditSelf", SelfReferencingProgram).Load();
+			foreach (var asmRef in module.GetAssemblyRefs())
+				asmRef.Version = new Version(4, 0, 0, 0);
+			var options = new dnlib.DotNet.Writer.ModuleWriterOptions(module);
+			options.MetadataOptions.Flags |= dnlib.DotNet.Writer.MetadataFlags.PreserveAll;
+			var image = new MemoryStream();
+			module.Write(image, options);
+			var compiled = new CompiledProgram("EditSelf", image.ToArray(), Array.Empty<byte>(), optimized: false);
+			var token = compiled.Load().GetTypes().First(a => a.Name == "Node").FindMethod("Twice").MDToken.Raw;
+			var outcome = RunEdit(GetDecompiler(Upstream), EditKind.EditMethod, compiled, "EditSelf", RunImage(compiled.Image, "EditSelf"), token);
 			Assert.Null(outcome?.Description);
 		}
 

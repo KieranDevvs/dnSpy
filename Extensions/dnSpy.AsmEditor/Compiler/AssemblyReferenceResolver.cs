@@ -17,6 +17,7 @@
     along with dnSpy.  If not, see <http://www.gnu.org/licenses/>.
 */
 
+using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using dnlib.DotNet;
@@ -66,6 +67,18 @@ namespace dnSpy.AsmEditor.Compiler {
 			return Save(CreateRef(asm.ManifestModule));
 		}
 
+		/// <summary>
+		/// The version of the assembly that the compiler gets for a reference (see <see cref="Resolve(IAssembly)"/>)
+		/// </summary>
+		Version? GetResolvedVersion(AssemblyRef asmRef) {
+			try {
+				return assemblyResolver.Resolve(asmRef, editedModule)?.Version;
+			}
+			catch (Exception ex) when (ex is not OutOfMemoryException) {
+				return null;
+			}
+		}
+
 		public CompilerMetadataReference? Create(AssemblyDef asm) => Save(CreateRef(asm.ManifestModule));
 		public CompilerMetadataReference? Create(ModuleDef module) => Save(CreateRef(module));
 
@@ -79,7 +92,7 @@ namespace dnSpy.AsmEditor.Compiler {
 				if (!moduleData.IsFileLayout)
 					return default;
 
-				var patcher = new ModulePatcher(moduleData, moduleData.IsFileLayout, tempAssembly, editedModule, nonNestedEditedType);
+				var patcher = new ModulePatcher(moduleData, moduleData.IsFileLayout, tempAssembly, editedModule, nonNestedEditedType, GetResolvedVersion);
 				if (!patcher.Patch(module, out var newModuleData))
 					return default;
 				if (moduleData != newModuleData) {

@@ -420,6 +420,7 @@ namespace dnSpy.Decompiler.Upstream.Tests {
 			using System.Runtime.CompilerServices;
 			using System.Text;
 			using System.Threading;
+			using System.Threading.Tasks;
 			using Pair = (int Left, int Right);
 
 			namespace EditModern {
@@ -684,7 +685,7 @@ namespace dnSpy.Decompiler.Upstream.Tests {
 						int changes = 0;
 						widget.Changed += () => changes++;
 						Pair pair = (size, 2);
-						return $"{size} {overflow} {wrapped} {counter.Value} {widget.Rename("v")} {changes} {Pointers(4)} {Native(-3, 5)} {ReadOnlyRef(in size)} {nameof(List<>)} {pair.Left + pair.Right} {Unmatched("c")}";
+						return $"{size} {overflow} {wrapped} {counter.Value} {widget.Rename("v")} {changes} {Pointers(4)} {Native(-3, 5)} {ReadOnlyRef(in size)} {nameof(List<>)} {pair.Left + pair.Right} {Unmatched("c")} {CountAsync(3).ToBlockingEnumerable().Sum()}";
 					}
 
 					// The compiler's helper throws SwitchExpressionException(object unmatchedValue)
@@ -694,6 +695,14 @@ namespace dnSpy.Decompiler.Upstream.Tests {
 						}
 						catch (SwitchExpressionException ex) {
 							return $"unmatched:{ex.UnmatchedValue}:{ex.InnerException is null}";
+						}
+					}
+
+					// C# 8: async streams
+					public static async IAsyncEnumerable<int> CountAsync(int n) {
+						for (int i = 1; i <= n; i++) {
+							await Task.Yield();
+							yield return i;
 						}
 					}
 

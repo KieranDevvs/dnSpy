@@ -29,13 +29,16 @@ namespace dnSpy.AsmEditor.Compiler {
 		readonly IAssembly tempAssembly;
 		readonly ModuleDef editedModule;
 		readonly TypeDef? nonNestedEditedType;
+		readonly Func<AssemblyRef, Version?>? getResolvedVersion;
 
-		public ModulePatcher(RawModuleBytes moduleData, bool isFileLayout, IAssembly tempAssembly, ModuleDef editedModule, TypeDef? nonNestedEditedType) {
+		/// <param name="getResolvedVersion">Version of the assembly that the compiler gets for a reference, or null</param>
+		public ModulePatcher(RawModuleBytes moduleData, bool isFileLayout, IAssembly tempAssembly, ModuleDef editedModule, TypeDef? nonNestedEditedType, Func<AssemblyRef, Version?>? getResolvedVersion = null) {
 			this.moduleData = moduleData;
 			this.isFileLayout = isFileLayout;
 			this.tempAssembly = tempAssembly;
 			this.editedModule = editedModule;
 			this.nonNestedEditedType = nonNestedEditedType;
+			this.getResolvedVersion = getResolvedVersion;
 		}
 
 		public unsafe bool Patch(ModuleDef module, out RawModuleBytes newModuleData) {
@@ -60,7 +63,10 @@ namespace dnSpy.AsmEditor.Compiler {
 						options |= MDEditorPatcherOptions.UpdateTypeReferences;
 					if (addIVT)
 						options |= MDEditorPatcherOptions.AllowInternalAccess;
-					var patcher = new MDEditorPatcher(moduleData, mdEditor, tempAssembly, nonNestedEditedType, options);
+					// (Only modules that are rewritten anyway: the edited module and the ones that reference its type)
+					if (getResolvedVersion is not null)
+						options |= MDEditorPatcherOptions.UpdateAssemblyRefVersions;
+					var patcher = new MDEditorPatcher(moduleData, mdEditor, tempAssembly, nonNestedEditedType, options, getResolvedVersion);
 					patcher.Patch(module);
 					if (mdEditor.MustRewriteMetadata()) {
 						var stream = new MDWriterMemoryStream();

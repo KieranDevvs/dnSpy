@@ -80,29 +80,28 @@ namespace dnSpy.Decompiler.Upstream {
 			var type = info.Type;
 			var selection = new EditSelection(info);
 			var unused = info.ShowAll && !info.DecompileHidden ? null : GetUnusedBodies(type, selection);
-			bool usesStubbedImage = false;
+			bool withoutUnusedBodies = false;
 			Decompile(type.Module, GetMethods(type), info.Output, info.Context,
 				(decompiler, handle) => decompiler.DecompileTypes(new[] { (TypeDefinitionHandle)handle }), type,
 				configureSettings: ConfigureEditSettings,
 				configure: (decompiler, bridged) => {
 					decompiler.AstTransforms.Add(new RemoveReservedAttributesTransform());
 					if (!info.ShowAll || info.DecompileHidden) {
-						var removedTypes = usesStubbedImage ? unused!.StateMachineTypes : new HashSet<TypeDef>();
-						decompiler.AstTransforms.Add(new EditCodeTransform(selection, cache, bridged, info.DecompileHidden, removedTypes));
+						decompiler.AstTransforms.Add(new EditCodeTransform(selection, cache, bridged, info.DecompileHidden, withoutUnusedBodies ? unused : null));
 					}
 				},
 				createImage: unused is null || unused.Methods.Count == 0 ? null : bridged => {
-					var image = StubbedImage.TryCreate(cache, bridged, unused.Methods, EditUnusedBodiesMinSize);
+					var image = ImageWithoutMethodBodies.TryCreate(cache, bridged, unused.Methods, EditUnusedBodiesMinSize);
 					if (image is not null) {
-						usesStubbedImage = true;
-						Interlocked.Increment(ref stubbedImages);
+						withoutUnusedBodies = true;
+						Interlocked.Increment(ref imagesWithoutUnusedBodies);
 					}
 					return image;
 				});
 		}
 
 		sealed class UnusedBodies {
-			public List<MethodDef> Methods { get; } = new List<MethodDef>();
+			public HashSet<MethodDef> Methods { get; } = new HashSet<MethodDef>();
 			/// <summary>
 			/// The compiler-generated types of the async methods and iterators in <see cref="Methods"/>. Their methods are
 			/// in <see cref="Methods"/>. The state machine attribute of the method that isn't decompiled references the
@@ -114,15 +113,16 @@ namespace dnSpy.Decompiler.Upstream {
 		/// <summary>
 		/// Tests: number of decompilations that used an image without the unused method bodies
 		/// </summary>
-		internal int StubbedImages => Volatile.Read(ref stubbedImages);
-		int stubbedImages;
+		internal int ImagesWithoutUnusedBodies => Volatile.Read(ref imagesWithoutUnusedBodies);
+		int imagesWithoutUnusedBodies;
 
 		/// <summary>
 		/// Methods whose code neither document shows: the main document doesn't have them and the second one only needs
 		/// their signatures ('throw null;' bodies). Upstream can only decompile a whole type, so in a big type most of the
 		/// time would go to code that's thrown away. Code that's needed to decompile the type or the shown members stays:
 		/// constructors (field initializers, primary constructors), accessors (auto properties, the field keyword,
-		/// events), compiler-generated methods and types (record members, lambdas, iterators, async methods).
+		/// events), compiler-generated methods and types (record members, lambdas, iterators, async methods), interface
+		/// methods (without a body they'd be abstract).
 		/// </summary>
 		static UnusedBodies? GetUnusedBodies(TypeDef type, EditSelection selection) {
 			// An edited constructor stores primary constructor parameters only if other members use them, so their code
@@ -137,7 +137,7 @@ namespace dnSpy.Decompiler.Upstream {
 		}
 
 		static void AddUnusedBodies(TypeDef type, EditSelection selection, UnusedBodies result) {
-			if (IsCompilerGenerated(type))
+			if (IsCompilerGenerated(type) || type.IsInterface)
 				return;
 			foreach (var method in type.Methods) {
 				if (selection.Shown.Contains(method) || method.IsConstructor || method.SemanticsAttributes != dnlib.DotNet.MethodSemanticsAttributes.None ||
@@ -171,8 +171,8 @@ namespace dnSpy.Decompiler.Upstream {
 			return null;
 		}
 
-		static void AddAllMethods(TypeDef type, List<MethodDef> methods) {
-			methods.AddRange(type.Methods);
+		static void AddAllMethods(TypeDef type, HashSet<MethodDef> methods) {
+			methods.UnionWith(type.Methods);
 			foreach (var nested in type.NestedTypes)
 				AddAllMethods(nested, methods);
 		}
@@ -269,16 +269,16 @@ namespace dnSpy.Decompiler.Upstream {
 			readonly ModuleBridgeCache cache;
 			readonly BridgedModule bridged;
 			readonly bool hidden;
-			readonly HashSet<TypeDef> removedTypes;
+			readonly UnusedBodies? unusedBodies;
 			readonly HashSet<ISymbol> removedSymbols = new HashSet<ISymbol>();
 
-			/// <param name="removedTypes">Types that neither document has (see <see cref="UnusedBodies.StateMachineTypes"/>)</param>
-			public EditCodeTransform(EditSelection selection, ModuleBridgeCache cache, BridgedModule bridged, bool hidden, HashSet<TypeDef> removedTypes) {
+			/// <param name="unusedBodies">The methods without bodies in the decompiled image, or null</param>
+			public EditCodeTransform(EditSelection selection, ModuleBridgeCache cache, BridgedModule bridged, bool hidden, UnusedBodies? unusedBodies) {
 				this.selection = selection;
 				this.cache = cache;
 				this.bridged = bridged;
 				this.hidden = hidden;
-				this.removedTypes = removedTypes;
+				this.unusedBodies = unusedBodies;
 			}
 
 			IMemberDef? ToDnlib(AstNode node) => node.GetSymbol() is IEntity entity ? cache.ToDnlib(entity) as IMemberDef : null;
@@ -325,7 +325,7 @@ namespace dnSpy.Decompiler.Upstream {
 						continue;
 					}
 					var def = ToDnlib(entity);
-					if (def is TypeDef removedType && removedTypes.Contains(removedType)) {
+					if (def is TypeDef removedType && unusedBodies?.StateMachineTypes.Contains(removedType) == true) {
 						Remove(entity);
 						continue;
 					}
@@ -374,15 +374,33 @@ namespace dnSpy.Decompiler.Upstream {
 				}
 			}
 
-			static void AddStubBodies(AstNode node) {
+			void AddStubBodies(AstNode node) {
 				foreach (var n in node.DescendantsAndSelf.ToArray()) {
-					if (n is EntityDeclaration entity)
+					if (n is EntityDeclaration entity) {
 						RemoveStateMachineAttributes(entity);
+						// Upstream shows a method without a body in the image as 'extern'
+						if (unusedBodies is not null && (entity.Modifiers & Modifiers.Extern) != 0 && ToDnlib(entity) is MethodDef md && unusedBodies.Methods.Contains(md)) {
+							entity.Modifiers &= ~Modifiers.Extern;
+							switch (entity) {
+							case MethodDeclaration m when m.Body is null:
+								m.Body = CreateStubBody();
+								break;
+							case OperatorDeclaration o when o.Body is null:
+								o.Body = CreateStubBody();
+								break;
+							case DestructorDeclaration d when d.Body is null:
+								d.Body = CreateStubBody();
+								break;
+							}
+						}
+					}
 					if (n is EntityDeclaration member && UsesPrimaryConstructorParameters(member))
 						continue;
 					switch (n) {
 					case MethodDeclaration { Body: not null } m:
 						m.Body = CreateStubBody();
+						// An async iterator must have a 'yield', and the stub isn't async
+						m.Modifiers &= ~Modifiers.Async;
 						break;
 					case ConstructorDeclaration { Body: not null } c:
 						c.Body = CreateStubBody();

@@ -81,6 +81,8 @@ namespace dnSpy.Decompiler.Upstream.Tests {
 			var engines = (Environment.GetEnvironmentVariable("EDIT_ENGINE") ?? "upstream,legacy").Split(',');
 			// Optional file that gets each edit before it starts, to find the edit if the test host crashes
 			var progress = Environment.GetEnvironmentVariable("EDIT_CORPUS_PROGRESS");
+			// Optional: only these edits ("File.dll:0x06000001,File.dll:0x02000002"), e.g. to repeat one
+			var only = Environment.GetEnvironmentVariable("EDIT_CORPUS_ONLY")?.Split(',').Select(a => a.Trim()).ToHashSet(StringComparer.OrdinalIgnoreCase);
 			// The legacy engine is a debug build here: its assertions would throw in the test host, not in dnSpy
 			System.Diagnostics.Trace.Listeners.Clear();
 			var totals = engines.ToDictionary(e => e, e => new Stats());
@@ -89,17 +91,30 @@ namespace dnSpy.Decompiler.Upstream.Tests {
 				var upstream = LanguageRunner.Create();
 				// string.GetHashCode() is randomized per process: use a stable seed so a run can be repeated
 				var random = new Random(StableHash(Path.GetFileName(file)));
+				if (only is not null && !only.Any(a => a.StartsWith(Path.GetFileName(file) + ":", StringComparison.OrdinalIgnoreCase)))
+					continue;
 				var methods = module.GetTypes()
 					.Where(t => !t.IsGlobalModuleType && IsVisible(upstream, t))
 					.SelectMany(t => t.Methods.Where(m => m.HasBody && upstream.ShowMember(m)))
 					.Select(m => m.MDToken.Raw).OrderBy(_ => random.Next()).Take(methodSamples).ToList();
 				var types = module.Types.Where(t => !t.IsGlobalModuleType && upstream.ShowMember(t) && !t.Name.String.StartsWith("<", StringComparison.Ordinal))
 					.Select(t => t.MDToken.Raw).OrderBy(_ => random.Next()).Take(typeSamples).ToList();
+				if (only is not null) {
+					// (Tokens that aren't in the sample)
+					foreach (var a in only.Where(a => a.StartsWith(Path.GetFileName(file) + ":", StringComparison.OrdinalIgnoreCase))) {
+						uint token = Convert.ToUInt32(a.Substring(a.IndexOf(':') + 1), 16);
+						var list = (token >> 24) == 0x02 ? types : methods;
+						if (!list.Contains(token))
+							list.Add(token);
+					}
+				}
 				foreach (var engine in engines) {
 					var stats = new Stats();
 					var watch = System.Diagnostics.Stopwatch.StartNew();
 					foreach (var (kind, tokens) in new[] { (EditKind.EditMethod, methods), (EditKind.EditClass, types) }) {
 						foreach (var token in tokens) {
+							if (only is not null && !only.Contains($"{Path.GetFileName(file)}:0x{token:X8}"))
+								continue;
 							var decompiler = engine == "legacy" ? LegacyDecompiler.CSharp : LanguageRunner.Create();
 							if (progress is not null)
 								File.AppendAllText(progress, $"{engine} {kind} {Path.GetFileName(file)} 0x{token:X8}{Environment.NewLine}");
@@ -135,10 +150,21 @@ namespace dnSpy.Decompiler.Upstream.Tests {
 			var module = Load(file);
 			try {
 				var member = (IMemberDef)module.ResolveToken(token);
+				var watch = System.Diagnostics.Stopwatch.StartNew();
 				var result = EditPipeline.Decompile(decompiler, kind, module, member);
+				var decompileTime = watch.Elapsed;
+				if (Environment.GetEnvironmentVariable("EDIT_CORPUS_DUMP") is string dumpDir) {
+					Directory.CreateDirectory(dumpDir);
+					foreach (var doc in result.Documents)
+						File.WriteAllText(Path.Combine(dumpDir, $"{Path.GetFileNameWithoutExtension(file)}-{token:X8}-{(decompiler is UpstreamCSharpLanguage ? "upstream" : "legacy")}-{doc.Name}"), doc.Text);
+				}
 				if (result.DecompileError is not null)
 					return ("decompile", new[] { "decompile" }, result.Describe());
-				if (!EditPipeline.CompileAndImport(result, module, member)) {
+				watch.Restart();
+				bool imported = EditPipeline.CompileAndImport(result, module, member);
+				if (Environment.GetEnvironmentVariable("EDIT_CORPUS_STAGES") is string stagesFile)
+					File.AppendAllText(stagesFile, $"{kind} {result.Target}: decompile {decompileTime.TotalSeconds:F1} s, compile+import {watch.Elapsed.TotalSeconds:F1} s, documents {string.Join("+", result.Documents.Select(a => a.Text.Length))} chars{Environment.NewLine}");
+				if (!imported) {
 					if (result.CompileErrors.Count != 0)
 						return ("compile", result.CompileErrors.Select(a => a.Id), result.Describe(3));
 					return ("import", result.ImportErrors.Select(a => a.Split(' ')[0]), result.Describe(3));
