@@ -14,10 +14,14 @@
     <SignAssembly>True</SignAssembly>
     <AssemblyOriginatorKeyFile>..\..\dnSpy.snk</AssemblyOriginatorKeyFile>
     <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
+    <!-- The legacy decompiler (baseline) references WPF projects; the code paths used here don't need WPF -->
+    <DisableTransitiveFrameworkReferences>true</DisableTransitiveFrameworkReferences>
   </PropertyGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\..\Extensions\ILSpy.Decompiler\dnSpy.Decompiler.Upstream.Core\dnSpy.Decompiler.Upstream.Core.csproj" />
+    <!-- Baseline for comparisons, remove with the legacy engine -->
+    <ProjectReference Include="..\..\Extensions\ILSpy.Decompiler\dnSpy.Decompiler.ILSpy.Core\dnSpy.Decompiler.ILSpy.Core.csproj" />
   </ItemGroup>
 
   <ItemGroup>
@@ -26,5 +30,17 @@
     <PackageReference Include="xunit" Version="2.9.3" />
     <PackageReference Include="xunit.runner.visualstudio" Version="3.1.5" />
   </ItemGroup>
+
+  <!--
+    The legacy fork has the same namespaces, type names and strong name key as the upstream package. Hide its
+    types behind an extern alias (it's only loaded by name at runtime).
+  -->
+  <Target Name="AliasLegacyDecompiler" AfterTargets="FindReferenceAssembliesForReferences" BeforeTargets="CoreCompile">
+    <ItemGroup>
+      <ReferencePathWithRefAssemblies Condition=" '%(Filename)' == 'ICSharpCode.Decompiler.Legacy' or '%(Filename)' == 'ICSharpCode.NRefactory' or '%(Filename)' == 'ICSharpCode.NRefactory.CSharp' or '%(Filename)' == 'ICSharpCode.NRefactory.VB' ">
+        <Aliases>legacy</Aliases>
+      </ReferencePathWithRefAssemblies>
+    </ItemGroup>
+  </Target>
 
 </Project>

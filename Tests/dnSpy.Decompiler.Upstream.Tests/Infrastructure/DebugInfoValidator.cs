@@ -50,6 +50,24 @@ namespace dnSpy.Decompiler.Upstream.Tests.Infrastructure {
 		public int PdbSequencePoints { get; set; }
 		public int PdbSequencePointsMatched { get; set; }
 
+		/// <summary>
+		/// Instructions in the compiler's non-hidden sequence point regions (user code), and how many of them are
+		/// covered by a decompiled statement. Uncovered user code means stepping lands where there's no source.
+		/// </summary>
+		public int PdbUserCodeInstructions { get; set; }
+		public int PdbUserCodeInstructionsCovered { get; set; }
+		public List<uint> UncoveredUserCode { get; } = new List<uint>();
+		public List<int> UnmappedPdbLocals { get; } = new List<int>();
+
+		/// <summary>
+		/// Decompiled statements that start at a compiler breakpoint location, and how many of them are about the
+		/// same code as the original source statement there (shared identifiers). A statement that doesn't is mapped
+		/// to the wrong IL: a breakpoint on it would stop somewhere else.
+		/// </summary>
+		public int SharedLocations { get; set; }
+		public int SharedLocationsSameCode { get; set; }
+		public List<string> WrongCode { get; } = new List<string>();
+
 		public int PdbLocals { get; set; }
 		public int PdbLocalsMapped { get; set; }
 
@@ -57,7 +75,7 @@ namespace dnSpy.Decompiler.Upstream.Tests.Infrastructure {
 
 		public override string ToString() =>
 			$"{Method.FullName}: errors={Errors.Count}, coverage={CoveredInstructions}/{Instructions}, " +
-			$"pdbSPs={PdbSequencePointsMatched}/{PdbSequencePoints}, pdbLocals={PdbLocalsMapped}/{PdbLocals}, nonEmptyStackStarts={NonEmptyStackStarts}";
+			$"pdbSPs={PdbSequencePointsMatched}/{PdbSequencePoints}, sameCode={SharedLocationsSameCode}/{SharedLocations}, userCodeCoverage={PdbUserCodeInstructionsCovered}/{PdbUserCodeInstructions}, pdbLocals={PdbLocalsMapped}/{PdbLocals}, nonEmptyStackStarts={NonEmptyStackStarts}";
 	}
 
 	/// <summary>
@@ -65,7 +83,7 @@ namespace dnSpy.Decompiler.Upstream.Tests.Infrastructure {
 	/// when available, against the compiler's PDB.
 	/// </summary>
 	static class DebugInfoValidator {
-		public static DebugInfoReport Validate(MethodDebugInfo info, string text, PdbMethodInfo? pdb) {
+		public static DebugInfoReport Validate(MethodDebugInfo info, string text, PdbMethodInfo? pdb, string? originalSource = null) {
 			var report = new DebugInfoReport(info.Method);
 			var body = info.Method.Body;
 			if (body is null) {
@@ -113,9 +131,47 @@ namespace dnSpy.Decompiler.Upstream.Tests.Infrastructure {
 				report.PdbSequencePoints = pdb.SequencePointOffsets.Count;
 				report.PdbSequencePointsMatched = pdb.SequencePointOffsets.Count(o => starts.Contains((uint)o));
 
+				if (originalSource is not null) {
+					var lineStarts = GetLineStarts(originalSource);
+					var variableNames = GetVariableNames(info, pdb);
+					foreach (var statement in info.Statements) {
+						if (!pdb.SourceLocations.TryGetValue((int)statement.ILSpan.Start, out var loc))
+							continue;
+						var original = Substring(originalSource, lineStarts, loc);
+						var decompiled = text.Substring(statement.TextSpan.Start, statement.TextSpan.Length);
+						var same = IsSameCode(original, decompiled, variableNames);
+						if (same is null)
+							continue;
+						report.SharedLocations++;
+						if (same.Value)
+							report.SharedLocationsSameCode++;
+						else
+							report.WrongCode.Add($"IL_{statement.ILSpan.Start:X4}: source `{original.Trim()}` vs decompiled `{decompiled.Trim()}`");
+					}
+				}
+
+				var allPoints = pdb.SequencePointOffsets.Select(o => (offset: o, hidden: false))
+					.Concat(pdb.HiddenSequencePointOffsets.Select(o => (offset: o, hidden: true))).OrderBy(p => p.offset).ToList();
+				for (int i = 0; i < allPoints.Count; i++) {
+					if (allPoints[i].hidden)
+						continue;
+					uint start = (uint)allPoints[i].offset;
+					uint end = i + 1 < allPoints.Count ? (uint)allPoints[i + 1].offset : codeSize;
+					foreach (var offset in stackDepths.Keys) {
+						if (offset < start || offset >= end)
+							continue;
+						report.PdbUserCodeInstructions++;
+						if (ilOwner.ContainsKey(offset))
+							report.PdbUserCodeInstructionsCovered++;
+						else
+							report.UncoveredUserCode.Add(offset);
+					}
+				}
+
 				var mappedSlots = new HashSet<int>(GetLocals(info.Scope).Where(l => l.Local is not null).Select(l => l.Local!.Index));
 				report.PdbLocals = pdb.LocalNames.Count;
 				report.PdbLocalsMapped = pdb.LocalNames.Keys.Count(slot => mappedSlots.Contains(slot));
+				report.UnmappedPdbLocals.AddRange(pdb.LocalNames.Keys.Where(slot => !mappedSlots.Contains(slot)));
 
 				if (pdb.Awaits.Count != 0) {
 					var expected = pdb.Awaits.Select(a => ((uint)a.yieldOffset, (uint)a.resumeOffset)).OrderBy(a => a).ToList();
@@ -125,6 +181,79 @@ namespace dnSpy.Decompiler.Upstream.Tests.Infrastructure {
 				}
 			}
 			return report;
+		}
+
+		static List<int> GetLineStarts(string text) {
+			var list = new List<int> { 0 };
+			for (int i = 0; i < text.Length; i++) {
+				if (text[i] == '\n')
+					list.Add(i + 1);
+			}
+			return list;
+		}
+
+		static string Substring(string text, List<int> lineStarts, (int startLine, int startColumn, int endLine, int endColumn) loc) {
+			int start = lineStarts[loc.startLine - 1] + loc.startColumn - 1;
+			int end = lineStarts[loc.endLine - 1] + loc.endColumn - 1;
+			return text.Substring(start, System.Math.Max(0, end - start));
+		}
+
+		/// <summary>
+		/// Names of locals and parameters in the original source and in the decompiled code. The decompiler renames
+		/// locals (it doesn't get the PDB), so these names aren't used to compare statements.
+		/// </summary>
+		static HashSet<string> GetVariableNames(MethodDebugInfo info, PdbMethodInfo pdb) {
+			var names = new HashSet<string>(pdb.LocalNames.Values);
+			foreach (var method in new[] { info.Method, info.KickoffMethod }) {
+				if (method is null)
+					continue;
+				foreach (var p in method.Parameters)
+					names.Add(p.Name);
+			}
+			foreach (var l in GetLocals(info.Scope))
+				names.Add(l.Name);
+			foreach (var p in info.Parameters)
+				names.Add(p.Name);
+			// Hoisted locals (<name>5__N) and captured variables live in compiler generated types
+			for (var type = info.Method.DeclaringType; type is not null; type = type.DeclaringType) {
+				foreach (var nested in type.NestedTypes.Append(type)) {
+					if (!nested.Name.String.Contains("<"))
+						continue;
+					foreach (var field in nested.Fields) {
+						var m = System.Text.RegularExpressions.Regex.Match(field.Name.String, @"^<([A-Za-z_][A-Za-z0-9_]*)>5__\d+$");
+						names.Add(m.Success ? m.Groups[1].Value : field.Name.String);
+					}
+				}
+			}
+			return names;
+		}
+
+		/// <summary>
+		/// Are the original and decompiled statements about the same code? They are if they share a member name or
+		/// literal. Returns null if there's nothing to compare: braces (the decompiler has no brace statements, so it
+		/// attributes a brace's nop to the next statement) or statements that only use variables.
+		/// </summary>
+		static bool? IsSameCode(string original, string decompiled, HashSet<string> variableNames) {
+			if (IsBrace(original) || IsBrace(decompiled))
+				return null;
+			var a = Words(original, variableNames);
+			var b = Words(decompiled, variableNames);
+			if (a.Count == 0 || b.Count == 0)
+				return null;
+			return a.Overlaps(b);
+		}
+
+		static bool IsBrace(string s) => s.Trim() is "{" or "}";
+
+		static readonly HashSet<string> keywords = new HashSet<string> { "var", "int", "string", "object", "bool", "return", "new", "this", "base", "in", "is", "when", "if", "else", "for", "foreach", "while", "do", "using", "try", "catch", "finally", "throw", "await", "yield", "break", "continue", "lock", "checked", "switch", "case", "default", "null", "true", "false", "async" };
+
+		static HashSet<string> Words(string s, HashSet<string> variableNames) {
+			var set = new HashSet<string>();
+			foreach (System.Text.RegularExpressions.Match m in System.Text.RegularExpressions.Regex.Matches(s, @"[A-Za-z_][A-Za-z0-9_]*|\d+|""[^""]*""")) {
+				if (!keywords.Contains(m.Value) && !variableNames.Contains(m.Value))
+					set.Add(m.Value);
+			}
+			return set;
 		}
 
 		static IEnumerable<SourceLocal> GetLocals(MethodDebugScope scope) {

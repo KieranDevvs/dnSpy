@@ -31,6 +31,12 @@ namespace dnSpy.Decompiler.Upstream.Tests.Infrastructure {
 	sealed class PdbMethodInfo {
 		public int Token { get; }
 		public List<int> SequencePointOffsets { get; } = new List<int>();
+		public List<int> HiddenSequencePointOffsets { get; } = new List<int>();
+
+		/// <summary>
+		/// Source location (1-based lines/columns in the original source) of each non-hidden sequence point
+		/// </summary>
+		public Dictionary<int, (int startLine, int startColumn, int endLine, int endColumn)> SourceLocations { get; } = new Dictionary<int, (int, int, int, int)>();
 		public Dictionary<int, string> LocalNames { get; } = new Dictionary<int, string>();
 		public List<(int yieldOffset, int resumeOffset)> Awaits { get; } = new List<(int, int)>();
 		public int? CatchHandlerOffset { get; set; }
@@ -51,8 +57,12 @@ namespace dnSpy.Decompiler.Upstream.Tests.Infrastructure {
 				var info = new PdbMethodInfo(MetadataTokens.GetToken(methodHandle));
 				var mdi = reader.GetMethodDebugInformation(handle);
 				foreach (var sp in mdi.GetSequencePoints()) {
-					if (!sp.IsHidden)
+					if (sp.IsHidden)
+						info.HiddenSequencePointOffsets.Add(sp.Offset);
+					else {
 						info.SequencePointOffsets.Add(sp.Offset);
+						info.SourceLocations[sp.Offset] = (sp.StartLine, sp.StartColumn, sp.EndLine, sp.EndColumn);
+					}
 				}
 				var kickoff = mdi.GetStateMachineKickoffMethod();
 				if (!kickoff.IsNil)
