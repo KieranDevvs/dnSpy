@@ -124,7 +124,9 @@ namespace dnSpy.Decompiler.Upstream.Settings {
 		bool showHiddenMembers;
 
 		public override int Version => version;
-		int version;
+		// The debugger caches debug info by method and compares this version with the version of the decompiler
+		// it uses, so don't start where other decompilers' settings start (0)
+		int version = 0x3D000000;
 
 		public override event EventHandler? VersionChanged;
 

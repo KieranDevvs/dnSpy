@@ -60,7 +60,7 @@ namespace dnSpy.Decompiler.Upstream {
 	sealed class UpstreamCSharpLanguage : DecompilerBase {
 		public static readonly Guid LanguageGuid = new Guid("8D2C76C0-5A6B-4A49-B8A5-2C3A1B9E7F11");
 		public const double LanguageOrderUI = 50;
-		const string ContentTypeCSharpUpstream = "C# ILSpy Upstream";
+		public const string ContentTypeName = "C# ILSpy Upstream";
 
 		readonly UpstreamDecompilerSettings langSettings;
 		readonly ModuleEditTracker editTracker;
@@ -93,8 +93,7 @@ namespace dnSpy.Decompiler.Upstream {
 		}
 
 		public override DecompilerSettingsBase Settings => langSettings;
-		public override string ContentTypeString => ContentTypeCSharpUpstream;
-		public static string ContentType => ContentTypeCSharpUpstream;
+		public override string ContentTypeString => ContentTypeName;
 		public override string GenericNameUI => DecompilerConstants.GENERIC_NAMEUI_CSHARP;
 		public override string UniqueNameUI => LanguageName;
 		public override double OrderUI => LanguageOrderUI;
@@ -205,6 +204,8 @@ namespace dnSpy.Decompiler.Upstream {
 
 		public override void Decompile(AssemblyDef asm, IDecompilerOutput output, DecompilationContext ctx) {
 			WriteAssembly(asm, output, ctx);
+			if (asm.ManifestModule is null)
+				return;
 			using (ctx.DisableAssemblyLoad())
 				Decompile(asm.ManifestModule, Array.Empty<MethodDef>(), output, ctx, (decompiler, handle) => decompiler.DecompileModuleAndAssemblyAttributes(), null);
 		}

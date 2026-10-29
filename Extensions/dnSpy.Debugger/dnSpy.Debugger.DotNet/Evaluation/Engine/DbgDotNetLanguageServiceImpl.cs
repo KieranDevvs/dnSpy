@@ -113,8 +113,16 @@ namespace dnSpy.Debugger.DotNet.Evaluation.Engine {
 				if (valueNodeFactory is null)
 					continue;
 
+				// There can be more than one decompiler for a language (eg. two C# decompilers). Use the one the user
+				// selected so the locals have the same names as in the decompiled code.
+				var defaultDecompiler = decompiler;
+				Func<IDecompiler> getDecompiler = () => {
+					var selected = decompilerService.Decompiler;
+					return selected.GenericGuid == defaultDecompiler.GenericGuid ? selected : defaultDecompiler;
+				};
+
 				var languageDisplayName = ResourceHelper.GetString(lz.Value, lz.Metadata.LanguageDisplayName);
-				yield return new DbgEngineLanguageImpl(dbgModuleReferenceProvider.Value, lz.Metadata.LanguageName, languageDisplayName, lz.Value, dbgMethodDebugInfoProvider.Value, decompiler, formatter.Value, valueNodeFactory, dnILInterpreter.Value, dbgAliasProvider.Value, predefinedEvaluationErrorMessagesHelper);
+				yield return new DbgEngineLanguageImpl(dbgModuleReferenceProvider.Value, lz.Metadata.LanguageName, languageDisplayName, lz.Value, dbgMethodDebugInfoProvider.Value, getDecompiler, formatter.Value, valueNodeFactory, dnILInterpreter.Value, dbgAliasProvider.Value, predefinedEvaluationErrorMessagesHelper);
 			}
 		}
 

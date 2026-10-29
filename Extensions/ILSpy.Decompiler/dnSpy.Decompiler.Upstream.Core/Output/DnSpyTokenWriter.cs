@@ -107,6 +107,8 @@ namespace dnSpy.Decompiler.Upstream.Output {
 				return;
 			if (prev is FieldDeclaration && node is FieldDeclaration)
 				return;
+			if (node is EnumMemberDeclaration)
+				return;
 			if (IsUsing(prev) && IsUsing(node))
 				return;
 			output.AddLineSeparator(lastMemberEnd);
