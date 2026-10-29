@@ -13,6 +13,7 @@
     <IsPublishable>false</IsPublishable>
     <IsTestProject>true</IsTestProject>
     <Nullable>enable</Nullable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <SignAssembly>True</SignAssembly>
     <AssemblyOriginatorKeyFile>..\..\dnSpy.snk</AssemblyOriginatorKeyFile>
     <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
@@ -22,6 +23,8 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\Extensions\ILSpy.Decompiler\dnSpy.Decompiler.Upstream.Core\dnSpy.Decompiler.Upstream.Core.csproj" />
+    <!-- The edit code pipeline (compile and import), its internals are visible to the tests -->
+    <ProjectReference Include="..\..\Extensions\dnSpy.AsmEditor\dnSpy.AsmEditor.csproj" />
     <!-- Baseline for comparisons, remove with the legacy engine -->
     <ProjectReference Include="..\..\Extensions\ILSpy.Decompiler\dnSpy.Decompiler.ILSpy.Core\dnSpy.Decompiler.ILSpy.Core.csproj" />
   </ItemGroup>

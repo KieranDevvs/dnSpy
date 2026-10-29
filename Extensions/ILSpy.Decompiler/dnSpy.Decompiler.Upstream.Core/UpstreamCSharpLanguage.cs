@@ -57,7 +57,7 @@ namespace dnSpy.Decompiler.Upstream {
 	/// <summary>
 	/// C# decompiler using the unmodified upstream ILSpy engine (ICSharpCode.Decompiler NuGet package)
 	/// </summary>
-	sealed class UpstreamCSharpLanguage : DecompilerBase {
+	sealed partial class UpstreamCSharpLanguage : DecompilerBase {
 		public static readonly Guid LanguageGuid = new Guid("8D2C76C0-5A6B-4A49-B8A5-2C3A1B9E7F11");
 		public const double LanguageOrderUI = 50;
 		public const string ContentTypeName = "C# ILSpy Upstream";
@@ -232,12 +232,18 @@ namespace dnSpy.Decompiler.Upstream {
 				Decompile(mod, Array.Empty<MethodDef>(), output, ctx, (decompiler, handle) => decompiler.DecompileModuleAndAssemblyAttributes(), null, cacheTypeSystem: false);
 		}
 
+		/// <param name="configure">Changes the settings or the decompiler for this decompilation</param>
+		/// <param name="createImage">Creates another image of the module to decompile (same tokens), or returns null to
+		/// use the module's image</param>
 		void Decompile(ModuleDef module, IEnumerable<MethodDef> methods, IDecompilerOutput output, DecompilationContext ctx,
-			Func<UpstreamCSharpDecompilerEngine, EntityHandle, SyntaxTree> decompile, IMemberDef? definition, bool cacheTypeSystem = true) {
+			Func<UpstreamCSharpDecompilerEngine, EntityHandle, SyntaxTree> decompile, IMemberDef? definition, bool cacheTypeSystem = true,
+			Action<DecompilerSettings>? configureSettings = null, Action<UpstreamCSharpDecompilerEngine, BridgedModule>? configure = null,
+			Func<BridgedModule, BridgedModule?>? createImage = null) {
 			CheckModified(module, methods, ctx);
 			// The version first: if the settings change now, the debug info gets the old version and is recreated
 			int settingsVersion = langSettings.Version;
 			var settings = langSettings.CreateDecompilationSettings();
+			configureSettings?.Invoke(settings);
 			bool showTokens = langSettings.ShowTokenAndRvaComments;
 			BridgedModule bridged;
 			try {
@@ -257,15 +263,25 @@ namespace dnSpy.Decompiler.Upstream {
 				handle = MetadataTokens.EntityHandle(token);
 			}
 
+			var image = createImage?.Invoke(bridged);
+			if (image is not null)
+				bridged = image;
+
 			BigStackRunner.Run(() => {
-				var decompiler = new UpstreamCSharpDecompilerEngine(typeSystems.Get(bridged, settings, cacheTypeSystem), settings) {
+				var typeSystem = image is not null ? typeSystems.CreateForImage(image, settings) : typeSystems.Get(bridged, settings, cacheTypeSystem);
+				var decompiler = new UpstreamCSharpDecompilerEngine(typeSystem, settings) {
 					CancellationToken = ctx.CancellationToken,
 					DocumentationProvider = DocumentationProvider,
 				};
 				if (settings.UseDebugSymbols)
 					decompiler.DebugInfoProvider = DnlibDebugInfoProvider.TryCreate(bridged);
+				// (Before the using declarations are added: it references a type)
+				int usings = decompiler.AstTransforms.IndexOf(decompiler.AstTransforms.OfType<IntroduceUsingDeclarations>().FirstOrDefault()!);
+				decompiler.AstTransforms.Insert(usings < 0 ? decompiler.AstTransforms.Count : usings, new Transforms.CompilerHelperCallTransform());
+				decompiler.AstTransforms.Insert(usings < 0 ? decompiler.AstTransforms.Count : usings + 1, new Transforms.CompoundAssignmentOperatorTransform());
 				if (showTokens)
 					decompiler.AstTransforms.Add(new TokenCommentTransform(cache));
+				configure?.Invoke(decompiler, bridged);
 				var syntaxTree = decompile(decompiler, handle);
 				WriteCode(syntaxTree, decompiler, settings, settingsVersion, module, output);
 			});
@@ -409,8 +425,6 @@ namespace dnSpy.Decompiler.Upstream {
 				return !memberVisibility.IsHidden(def, langSettings.Settings);
 			return true;
 		}
-
-		public override bool CanDecompile(DecompilationType decompilationType) => false;
 
 		const FormatterOptions TypeNameOptions = FormatterOptions.ShowIntrinsicTypeKeywords | FormatterOptions.ShowDeclaringTypes;
 

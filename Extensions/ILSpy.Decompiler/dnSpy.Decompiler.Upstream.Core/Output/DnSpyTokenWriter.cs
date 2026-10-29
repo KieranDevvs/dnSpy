@@ -279,8 +279,26 @@ namespace dnSpy.Decompiler.Upstream.Output {
 			return true;
 		}
 
-		public override void WriteKeyword(string keyword) =>
+		public override void WriteKeyword(string keyword) {
+			// Like dnSpy's other C# decompiler, an accessor's keyword ('get', 'set'...) and an operator's 'operator'
+			// keyword are their method's definition: the tree view and the edit dialog find the method there
+			if (GetKeywordDefinition(keyword) is ICSharpCode.Decompiler.TypeSystem.IMethod method) {
+				Write(BoxedTextColor.Keyword, BoxedTextColor.Keyword, () => output.WriteReference(method, keyword, isDefinition: true));
+				return;
+			}
 			Write(BoxedTextColor.Keyword, BoxedTextColor.Keyword, () => base.WriteKeyword(keyword));
+		}
+
+		ICSharpCode.Decompiler.TypeSystem.IMethod? GetKeywordDefinition(string keyword) {
+			switch (CurrentNode) {
+			case Accessor accessor when keyword is "get" or "set" or "init" or "add" or "remove":
+				return accessor.GetSymbol() as ICSharpCode.Decompiler.TypeSystem.IMethod;
+			case OperatorDeclaration op when keyword == "operator":
+				return op.GetSymbol() as ICSharpCode.Decompiler.TypeSystem.IMethod;
+			default:
+				return null;
+			}
+		}
 
 		public override void WritePrimitiveType(string type) {
 			if (type == "new") {
@@ -299,6 +317,15 @@ namespace dnSpy.Decompiler.Upstream.Output {
 			var node = CurrentNode;
 			int start = output.NextPosition;
 			var color = GetTokenColor(token, node);
+			// An expression-bodied property's getter has no 'get' keyword: its '=>' is the getter's definition
+			if (token == "=>" && ((node as PropertyDeclaration)?.ExpressionBody is not null || (node as IndexerDeclaration)?.ExpressionBody is not null)) {
+				var getter = (node!.GetSymbol() as IProperty)?.Getter;
+				if (getter is not null) {
+					Write(color, color, () => output.WriteReference(getter, token, isDefinition: true));
+					lastTokenStart = start;
+					return;
+				}
+			}
 			Write(color, color, () => base.WriteToken(token));
 			int end = output.NextPosition;
 			lastTokenStart = start;

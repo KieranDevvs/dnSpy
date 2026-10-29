@@ -43,6 +43,8 @@ namespace dnSpy.Decompiler.Upstream.Tests.Infrastructure {
 			throw new InvalidOperationException("Legacy C# decompiler not found");
 		});
 
+		public static IDecompiler CSharp => csharp.Value;
+
 		public static (string text, IReadOnlyList<MethodDebugInfo> debugInfos) DecompileType(TypeDef type) => DecompileType(type, default);
 
 		public static (string text, IReadOnlyList<MethodDebugInfo> debugInfos) DecompileType(TypeDef type, System.Threading.CancellationToken cancellationToken) {

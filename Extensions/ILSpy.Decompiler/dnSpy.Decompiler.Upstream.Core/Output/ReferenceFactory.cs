@@ -78,6 +78,7 @@ namespace dnSpy.Decompiler.Upstream.Output {
 		/// (eg. List&lt;int&gt;.Add) become dnlib member references so tooltips show the instantiated signature.
 		/// </summary>
 		public object? GetMemberReference(IMember member) {
+			member = GetExtensionImplementation(member) ?? member;
 			var definition = cache.ToDnlib(member.MemberDefinition ?? member) as IMemberDef;
 			if (definition is null)
 				return null;
@@ -93,6 +94,28 @@ namespace dnSpy.Decompiler.Upstream.Output {
 				// Unusual (eg. obfuscated) signatures: fall back to the definition
 			}
 			return definition;
+		}
+
+		/// <summary>
+		/// A member of a C# 14 extension block is a metadata-only member of a nested type, its code is in the
+		/// implementation method in the static class (the method the tree view shows and the debugger stops in). An
+		/// extension property's is its getter's (else setter's).
+		/// </summary>
+		static IMember? GetExtensionImplementation(IMember member) {
+			var method = member switch {
+				UpstreamMethod m => m,
+				IProperty p => p.Getter ?? p.Setter,
+				_ => null,
+			};
+			if (method is null || method.MemberDefinition is not UpstreamMethod methodDefinition)
+				return null;
+			try {
+				if (methodDefinition.ResolveExtensionInfo()?.InfoOfExtensionMember(methodDefinition) is ExtensionMemberInfo info)
+					return info.ImplementationMethod;
+			}
+			catch (Exception ex) when (!(ex is OutOfMemoryException)) {
+			}
+			return null;
 		}
 
 		object GetMethodReference(UpstreamMethod method, MethodDef md) {
@@ -119,6 +142,10 @@ namespace dnSpy.Decompiler.Upstream.Output {
 		/// Gets the color of a reference, or if there's no reference, the color of the upstream symbol
 		/// </summary>
 		public object GetColor(object? reference, object? symbol) {
+			// An extension property refers to its getter's implementation method (see GetExtensionImplementation), but
+			// it's still a property
+			if (symbol is IProperty property && GetExtensionImplementation(property) is not null)
+				return GetColor(symbol);
 			if (reference is not null) {
 				var color = ColorProvider.GetColor(reference);
 				if (!BoxedTextColor.Text.Equals(color))

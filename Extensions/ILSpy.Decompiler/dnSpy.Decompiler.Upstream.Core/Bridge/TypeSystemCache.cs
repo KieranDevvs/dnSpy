@@ -64,6 +64,13 @@ namespace dnSpy.Decompiler.Upstream.Bridge {
 			}
 		}
 
+		/// <summary>
+		/// Creates a type system that isn't cached, for another image of a module (see
+		/// <see cref="ModuleBridgeCache.AddImage"/>). The images of referenced modules are cached as usual.
+		/// </summary>
+		public DecompilerTypeSystem CreateForImage(BridgedModule image, DecompilerSettings settings) =>
+			new DecompilerTypeSystem(image.File, new DnlibAssemblyResolver(cache, image.Module), settings);
+
 		static bool IsValid(Entry entry, int addedGeneration) {
 			var resolver = entry.Resolver!;
 			if (resolver.UsesInvalidatedModule)

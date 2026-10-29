@@ -152,6 +152,19 @@ namespace dnSpy.Decompiler.Upstream.Bridge {
 		}
 
 		/// <summary>
+		/// Registers another image of a bridged module with the same tokens (e.g. one with some method bodies
+		/// replaced) so its entities map back to dnlib. It isn't cached.
+		/// </summary>
+		public BridgedModule AddImage(BridgedModule bridged, MetadataFile file) {
+			var image = new BridgedModule(bridged.Module, file, bridged.Tokens, bridged.ImageKind, bridged.NormalizeReasons, bridged.WriterErrors, bridged.CreationTime) {
+				IsInvalidated = bridged.IsInvalidated,
+			};
+			lock (lockObj)
+				allFiles.Add(file, image);
+			return image;
+		}
+
+		/// <summary>
 		/// Gets the bridged module of an image (also images that were invalidated since)
 		/// </summary>
 		public BridgedModule? Find(MetadataFile file) {
