@@ -159,9 +159,12 @@ namespace dnSpy.Decompiler.Upstream.Tests {
 			Assert.Empty(upstream.MissingDebugInfo);
 			Assert.Empty(upstream.Reports.SelectMany(r => r.Errors));
 			Assert.Empty(asyncMismatches);
-			// Regression guards (measured Oct 2026: coverage 63-80%, shared breakpoint locations 53-68%)
-			Assert.True(Ratio(upstream.Reports.Sum(r => r.PdbUserCodeInstructionsCovered), upstream.Reports.Sum(r => r.PdbUserCodeInstructions)) >= 0.55, "User code IL coverage dropped below 55%");
-			Assert.True(Ratio(upstream.Reports.Sum(r => r.PdbSequencePointsMatched), upstream.Reports.Sum(r => r.PdbSequencePoints)) >= 0.45, "Breakpoint locations shared with the compiler dropped below 45%");
+			// Regression guards (measured Oct 2026 after the statement shaping: coverage 84-91%, shared breakpoint
+			// locations 59-90%; upstream's own sequence points alone gave 63-80% and 53-68%)
+			Assert.True(Ratio(upstream.Reports.Sum(r => r.PdbUserCodeInstructionsCovered), upstream.Reports.Sum(r => r.PdbUserCodeInstructions)) >= 0.80, "User code IL coverage dropped below 80%");
+			Assert.True(Ratio(upstream.Reports.Sum(r => r.PdbSequencePointsMatched), upstream.Reports.Sum(r => r.PdbSequencePoints)) >= 0.55, "Breakpoint locations shared with the compiler dropped below 55%");
+			// Every local the compiler named (catch variables included) can be shown and evaluated
+			Assert.Equal(upstream.Reports.Sum(r => r.PdbLocals), upstream.Reports.Sum(r => r.PdbLocalsMapped));
 			int hoisted = upstream.Reports.Sum(r => r.HoistedLocals);
 			if (hoisted != 0)
 				Assert.True(Ratio(upstream.Reports.Sum(r => r.HoistedLocalsNamed), hoisted) >= 0.5, "Less than half of the hoisted locals are mapped with their name");

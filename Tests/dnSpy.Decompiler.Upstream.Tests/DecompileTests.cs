@@ -76,6 +76,9 @@ namespace dnSpy.Decompiler.Upstream.Tests {
 		static bool NameMatches(IMDTokenProvider dnlib, string text) {
 			switch (dnlib) {
 			case TypeDef type:
+				// Nullable annotation (string?)
+				if (text == "?")
+					return true;
 				if (keywordTypes.TryGetValue(text, out var fullName))
 					return type.FullName == fullName;
 				var name = type.Name.String;
@@ -84,6 +87,9 @@ namespace dnSpy.Decompiler.Upstream.Tests {
 			case MethodDef method:
 				if (text is "(" or ")" or "[" or "]")
 					return true;
+				// Operators reference the method that implements them (string + string is String.Concat)
+				if (text.Length <= 3 && !char.IsLetter(text[0]))
+					return method.IsStatic;
 				if (method.IsConstructor)
 					return method.DeclaringType.Name.String.StartsWith(text) || text == "base" || text == "this";
 				var methodName = method.Name.String;

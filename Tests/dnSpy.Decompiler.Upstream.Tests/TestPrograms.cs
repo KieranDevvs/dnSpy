@@ -89,6 +89,24 @@ namespace dnSpy.Decompiler.Upstream.Tests {
 					return f(Local(list.Count));
 				}
 
+				public int Enumerators(List<int> list, IEnumerable<string> names) {
+					int total = 0;
+					foreach (var item in list)
+						total += item;
+					foreach (string name in names) {
+						if (name.Length == 0)
+							break;
+						total += name.Length;
+					}
+					return total;
+				}
+
+				public string Conditional(int[] values, string? text) {
+					var first = values.Length > 0 ? values[0] : -1;
+					text ??= "none";
+					return text + first;
+				}
+
 				public void Locking(object gate, List<string> log) {
 					lock (gate) {
 						log.Add("in");

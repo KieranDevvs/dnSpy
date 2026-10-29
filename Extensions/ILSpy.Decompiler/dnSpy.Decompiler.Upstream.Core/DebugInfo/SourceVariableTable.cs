@@ -19,6 +19,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using dnlib.DotNet;
 using dnlib.DotNet.Emit;
 using dnSpy.Contracts.Decompiler;
@@ -54,6 +55,12 @@ namespace dnSpy.Decompiler.Upstream.DebugInfo {
 			textReferences.Add(variable, reference);
 			return reference;
 		}
+
+		/// <summary>
+		/// true if the decompiled text uses the variable. Returns true for all variables if nothing was written with
+		/// this table (then it isn't known).
+		/// </summary>
+		public bool IsUsedInText(ILVariable variable) => textReferences.Count == 0 || textReferences.ContainsKey(variable);
 
 		Parameter? TryGetParameter(ILVariable variable) {
 			if (variable.Kind != VariableKind.Parameter || !(variable.Index is int index))
@@ -113,16 +120,77 @@ namespace dnSpy.Decompiler.Upstream.DebugInfo {
 		/// Gets the IL local (slot) of a variable or null if it doesn't use one
 		/// </summary>
 		public Local? GetILLocal(ILVariable variable) {
-			if (!(variable.Index is int index) || !IsILLocal(variable.Kind))
+			if (!IsILLocal(variable.Kind) && variable.Kind != VariableKind.ExceptionStackSlot)
 				return null;
 			// IL offsets and locals belong to the method whose body was decompiled: MoveNext() for async/iterator methods
 			var function = variable.Function;
 			var method = function?.MoveNextMethod ?? function?.Method;
 			var bodyMethod = method is null ? null : cache.ToDnlib(method) as MethodDef;
 			var body = bodyMethod?.Body;
-			if (body is null || (uint)index >= (uint)body.Variables.Count)
+			if (body is null)
+				return null;
+			// A catch variable can be the exception on the stack (its index isn't a local)
+			if (variable.Kind == VariableKind.ExceptionStackSlot || (variable.Kind == VariableKind.ExceptionLocal && variable.Index is null))
+				return GetExceptionLocal(variable, body);
+			if (!(variable.Index is int index))
+				return null;
+			if ((uint)index >= (uint)body.Variables.Count)
 				return null;
 			return body.Variables[index];
+		}
+
+		/// <summary>
+		/// A catch variable has no IL local upstream (the exception is on the stack when the handler starts), but the
+		/// compiler stores it in one, which upstream removed: the debugger reads its value from that local.
+		/// </summary>
+		static Local? GetExceptionLocal(ILVariable variable, CilBody body) {
+			var handler = variable.Function?.Descendants.OfType<TryCatchHandler>().FirstOrDefault(h => h.Variable == variable);
+			if (handler is null)
+				return null;
+			var instrs = body.Instructions;
+			var offsets = new uint[instrs.Count];
+			uint offset = 0;
+			for (int i = 0; i < instrs.Count; i++) {
+				offsets[i] = offset;
+				offset += (uint)instrs[i].GetSize();
+			}
+			// catch (T ex): the store at the start of the handler
+			var range = handler.ExceptionSpecifierILRange;
+			if (!range.IsEmpty) {
+				for (int i = 0; i < instrs.Count; i++) {
+					if (offsets[i] >= range.Start && offsets[i] < range.End && instrs[i].IsStloc())
+						return instrs[i].GetLocal(body.Variables);
+				}
+				return null;
+			}
+			// The handler's clause: its filter or handler starts where the upstream handler's code does
+			var starts = new HashSet<uint>();
+			foreach (var instr in new[] { handler, handler.Filter, handler.Body }) {
+				if (instr is not null && instr.StartILOffset >= 0)
+					starts.Add((uint)instr.StartILOffset);
+			}
+			int IndexOf(Instruction? instr) => instr is null ? -1 : instrs.IndexOf(instr);
+			var eh = body.ExceptionHandlers.FirstOrDefault(a =>
+				(IndexOf(a.FilterStart) is int f && f >= 0 && starts.Contains(offsets[f])) ||
+				(IndexOf(a.HandlerStart) is int h && h >= 0 && starts.Contains(offsets[h])));
+			if (eh is null)
+				return null;
+			int handlerStart = IndexOf(eh.HandlerStart);
+			if (handlerStart < 0)
+				return null;
+			var typeName = variable.Type.ReflectionName;
+			bool IsExceptionStore(int i) => instrs[i].IsStloc() && instrs[i].GetLocal(body.Variables) is Local local && local.Type?.ReflectionFullName == typeName;
+			// catch (T ex) when (...): the filter stores it after the type check (isinst T; dup; brtrue L; ...; L: stloc)
+			int filterStart = IndexOf(eh.FilterStart);
+			if (eh.HandlerType == ExceptionHandlerType.Filter && filterStart >= 0) {
+				for (int i = filterStart; i < handlerStart; i++) {
+					if (IsExceptionStore(i))
+						return instrs[i].GetLocal(body.Variables);
+				}
+				return null;
+			}
+			// catch (T ex): stored by the handler's first instruction
+			return eh.HandlerType == ExceptionHandlerType.Catch && IsExceptionStore(handlerStart) ? instrs[handlerStart].GetLocal(body.Variables) : null;
 		}
 
 		static bool IsILLocal(VariableKind kind) =>

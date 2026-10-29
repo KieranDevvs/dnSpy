@@ -103,10 +103,37 @@ namespace dnSpy.Decompiler.Upstream.Tests.Infrastructure {
 			uint codeSize = (uint)body.GetCodeSize();
 			var stackDepths = StackDepthCalculator.Calculate(info.Method);
 
+			var entries = ControlFlowEntries.Calculate(body);
 			var ilOwner = new Dictionary<uint, TextSpan>();
 			foreach (var statement in info.Statements) {
+				// dnSpy binds a breakpoint to the first instruction of each IL span of the statement. If the span can be
+				// entered elsewhere (a branch from outside the span), the breakpoint misses those executions and fires
+				// when only the first part runs (e.g. a 'continue' jump attributed to the next statement).
+				// (A branch from another IL span of the same statement is fine: its breakpoint fired already)
+				foreach (var (target, source) in entries) {
+					if (target > statement.ILSpan.Start && target < statement.ILSpan.End && (source is not uint s || !info.Statements.Any(o => o.TextSpan == statement.TextSpan && o.ILSpan.Start <= s && s < o.ILSpan.End)))
+						report.Errors.Add($"Statement {statement} can be entered at IL_{target:X4} " + (source is uint from ? $"from IL_{from:X4}" : "(exception handler)") + " without executing its first instruction");
+				}
 				var il = statement.ILSpan;
 				var ts = statement.TextSpan;
+				// A simple statement (not an if/loop/switch header) only branches within itself or to its end
+				// (e.g. a?.M()). A conditional branch elsewhere means it starts with another statement's code, e.g. the
+				// tail of an if condition attributed to the 'break' in its body: a breakpoint on it would fire when it
+				// doesn't run. The end of a break/continue/goto is where it jumps anyway, so it can't be a target.
+				if (ts.Start >= 0 && ts.End <= text.Length && GetStatementKind(text, ts) is StatementKind kind && kind != StatementKind.ControlFlow) {
+					foreach (var instr in body.Instructions) {
+						if (instr.Offset < il.Start || instr.Offset >= il.End || instr.OpCode.FlowControl != FlowControl.Cond_Branch)
+							continue;
+						var targets = instr.Operand is Instruction t ? new[] { t } : instr.Operand as IList<Instruction> ?? System.Array.Empty<Instruction>();
+						foreach (var target in targets) {
+							bool inside = target.Offset >= il.Start && (target.Offset < il.End || (target.Offset == il.End && kind != StatementKind.Jump));
+							// A branch to IL without a statement can be the statement's own code (e.g. the arms of a
+							// conditional expression that the decompiler didn't attribute)
+							if (!inside && info.Statements.Any(o => o.TextSpan != ts && o.ILSpan.Start <= target.Offset && target.Offset < o.ILSpan.End))
+								report.Errors.Add($"Statement {statement} contains another statement's branch (IL_{instr.Offset:X4} to IL_{target.Offset:X4})");
+						}
+					}
+				}
 				if (!offsets.Contains(il.Start))
 					report.Errors.Add($"Statement {statement} starts inside an instruction");
 				if (il.End != codeSize && !offsets.Contains(il.End))
@@ -226,6 +253,25 @@ namespace dnSpy.Decompiler.Upstream.Tests.Infrastructure {
 			return report;
 		}
 
+		enum StatementKind { Simple, Jump, ControlFlow }
+
+		static readonly System.Text.RegularExpressions.Regex controlFlowStatement = new System.Text.RegularExpressions.Regex(@"^(if|while|for|foreach|switch|do|when|catch|using|lock|fixed|in|case|else|try|finally)\b|^[{}]");
+		static readonly System.Text.RegularExpressions.Regex jumpStatement = new System.Text.RegularExpressions.Regex(@"^(break|continue|goto)\b");
+
+		static StatementKind GetStatementKind(string text, TextSpan span) {
+			var s = text.Substring(span.Start, span.Length).TrimStart();
+			if (jumpStatement.IsMatch(s))
+				return StatementKind.Jump;
+			if (controlFlowStatement.IsMatch(s))
+				return StatementKind.ControlFlow;
+			// The condition and iterator of a for loop are separate statements
+			int lineStart = text.LastIndexOf('\n', System.Math.Max(0, span.Start - 1)) + 1;
+			var line = text.Substring(lineStart, span.Start - lineStart).TrimStart();
+			if (line.StartsWith("for ", System.StringComparison.Ordinal) || line.StartsWith("for(", System.StringComparison.Ordinal))
+				return StatementKind.ControlFlow;
+			return StatementKind.Simple;
+		}
+
 		static List<int> GetLineStarts(string text) {
 			var list = new List<int> { 0 };
 			for (int i = 0; i < text.Length; i++) {
@@ -283,12 +329,17 @@ namespace dnSpy.Decompiler.Upstream.Tests.Infrastructure {
 			var b = Words(decompiled, variableNames);
 			if (a.Count == 0 || b.Count == 0)
 				return null;
+			// Constant expressions are folded by the compiler (int.MaxValue - 1 is decompiled as 2147483646)
+			if (a.All(IsNumber) || b.All(IsNumber))
+				return null;
 			// At least half of the smaller set must be shared (one shared name like 'Console' isn't enough)
 			int shared = a.Count(w => b.Contains(w));
 			return shared * 2 >= System.Math.Min(a.Count, b.Count);
 		}
 
 		static bool IsBrace(string s) => s.Trim() is "{" or "}";
+
+		static bool IsNumber(string word) => word.Length != 0 && char.IsDigit(word[0]);
 
 		static readonly HashSet<string> keywords = new HashSet<string> { "var", "int", "string", "object", "bool", "return", "new", "this", "base", "in", "is", "when", "if", "else", "for", "foreach", "while", "do", "using", "try", "catch", "finally", "throw", "await", "yield", "break", "continue", "lock", "checked", "switch", "case", "default", "null", "true", "false", "async" };
 
@@ -308,6 +359,31 @@ namespace dnSpy.Decompiler.Upstream.Tests.Infrastructure {
 				foreach (var local in GetLocals(child))
 					yield return local;
 			}
+		}
+	}
+
+	/// <summary>
+	/// Control transfers that don't fall through: (target, source) for each branch, and (start, null) for each
+	/// exception handler and filter
+	/// </summary>
+	static class ControlFlowEntries {
+		public static List<(uint target, uint? source)> Calculate(CilBody body) {
+			var list = new List<(uint, uint?)>();
+			foreach (var instr in body.Instructions) {
+				if (instr.Operand is Instruction target)
+					list.Add((target.Offset, instr.Offset));
+				else if (instr.Operand is IList<Instruction> targets) {
+					foreach (var t in targets)
+						list.Add((t.Offset, instr.Offset));
+				}
+			}
+			foreach (var eh in body.ExceptionHandlers) {
+				if (eh.HandlerStart is not null)
+					list.Add((eh.HandlerStart.Offset, null));
+				if (eh.FilterStart is not null)
+					list.Add((eh.FilterStart.Offset, null));
+			}
+			return list;
 		}
 	}
 

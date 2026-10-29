@@ -44,11 +44,13 @@ namespace dnSpy.Decompiler.Upstream.DebugInfo {
 		public static List<MethodDebugInfo> Create(SyntaxTree syntaxTree, IDictionary<ILFunction, List<UpstreamSequencePoint>> sequencePoints,
 			ILocationMapper output, ModuleBridgeCache cache, SourceVariableTable variables, int decompilerSettingsVersion, List<string> repairs) {
 			var spans = GetSpans(syntaxTree, output);
+			var kinds = GetStatementKinds(syntaxTree, output);
+			StatementKind getKind(TextSpan span) => kinds.TryGetValue(span, out var kind) ? kind : StatementKind.Other;
 			// The expression evaluator resolves type names with them
 			var imports = syntaxTree.Descendants.OfType<UsingDeclaration>().Select(a => a.Namespace).Where(a => !string.IsNullOrEmpty(a)).Distinct().ToArray();
 			var result = new List<MethodDebugInfo>(sequencePoints.Count);
 			foreach (var kv in sequencePoints) {
-				var info = Create(kv.Key, kv.Value, output, cache, variables, spans, imports, decompilerSettingsVersion, repairs);
+				var info = Create(kv.Key, kv.Value, output, cache, variables, spans, getKind, imports, decompilerSettingsVersion, repairs);
 				if (info is not null)
 					result.Add(info);
 			}
@@ -56,7 +58,7 @@ namespace dnSpy.Decompiler.Upstream.DebugInfo {
 		}
 
 		static MethodDebugInfo? Create(ILFunction function, List<UpstreamSequencePoint> points, ILocationMapper output,
-			ModuleBridgeCache cache, SourceVariableTable variables, Spans spans, string[] imports, int decompilerSettingsVersion, List<string> repairs) {
+			ModuleBridgeCache cache, SourceVariableTable variables, Spans spans, Func<TextSpan, StatementKind> getKind, string[] imports, int decompilerSettingsVersion, List<string> repairs) {
 			if (function.Method is null)
 				return null;
 			// IL offsets are offsets in the method whose body was decompiled: MoveNext() for async/iterator methods
@@ -74,11 +76,17 @@ namespace dnSpy.Decompiler.Upstream.DebugInfo {
 			};
 
 			var body = bodyMethod.Body;
-			foreach (var statement in SequencePointSanitizer.Sanitize(points, GetInstructionBoundaries(body), output.ToOffset, bodyMethod.FullName, repairs))
+			var statements = SequencePointSanitizer.Sanitize(points, GetInstructionBoundaries(body), output.ToOffset, bodyMethod.FullName, repairs);
+			var locals = GetLocals(function, variables).ToList();
+			// Upstream keeps variables for some slots it removed from the code (e.g. an awaitable's temporary)
+			var visibleLocals = new HashSet<int>(function.Variables.Where(variables.IsUsedInText).Select(variables.GetILLocal).OfType<Local>().Select(a => a.Index));
+			spans.ClosingBraces.TryGetValue(function, out var closingBrace);
+			var context = new ShapeContext(getKind, visibleLocals, closingBrace, function.MoveNextMethod is not null);
+			foreach (var statement in StatementShaper.Shape(statements, bodyMethod, context))
 				builder.Add(statement);
 
 			builder.Scope.Span = ILSpan.FromBounds(0, (uint)(body is null ? function.CodeSize : body.GetCodeSize()));
-			builder.Scope.Locals.AddRange(GetLocals(function, variables));
+			builder.Scope.Locals.AddRange(locals);
 			foreach (var ns in imports)
 				builder.Scope.Imports.Add(ImportInfo.CreateNamespace(ns));
 			builder.Parameters = GetParameters(function, kickoffMethod ?? bodyMethod, cache);
@@ -222,6 +230,42 @@ namespace dnSpy.Decompiler.Upstream.DebugInfo {
 		sealed class Spans {
 			public Dictionary<ILFunction, (int start, int end)> ByFunction { get; } = new Dictionary<ILFunction, (int, int)>();
 			public Dictionary<UpstreamMethod, (int start, int end)> ByMethod { get; } = new Dictionary<UpstreamMethod, (int, int)>();
+			/// <summary>Closing brace of a function's block body</summary>
+			public Dictionary<ILFunction, TextSpan?> ClosingBraces { get; } = new Dictionary<ILFunction, TextSpan?>();
+		}
+
+		/// <summary>
+		/// Kinds of the statements that upstream creates sequence points for (their text span is the node's)
+		/// </summary>
+		static Dictionary<TextSpan, StatementKind> GetStatementKinds(SyntaxTree syntaxTree, ILocationMapper output) {
+			var kinds = new Dictionary<TextSpan, StatementKind>();
+			foreach (var node in syntaxTree.Descendants) {
+				StatementKind kind;
+				switch (node) {
+				case ExpressionStatement:
+				case VariableDeclarationStatement:
+				case ReturnStatement:
+				case ThrowStatement:
+				case YieldReturnStatement:
+					kind = StatementKind.Simple;
+					break;
+				case BreakStatement:
+				case ContinueStatement:
+				case GotoStatement:
+				case YieldBreakStatement:
+					kind = StatementKind.Jump;
+					break;
+				default:
+					continue;
+				}
+				if (node.StartLocation.IsEmpty || node.EndLocation.IsEmpty)
+					continue;
+				int start = output.ToOffset(node.StartLocation.Line, node.StartLocation.Column);
+				int end = output.ToOffset(node.EndLocation.Line, node.EndLocation.Column);
+				if (end > start)
+					kinds[TextSpan.FromBounds(start, end)] = kind;
+			}
+			return kinds;
 		}
 
 		static bool IsFunctionDefinition(AstNode node) =>
@@ -237,8 +281,13 @@ namespace dnSpy.Decompiler.Upstream.DebugInfo {
 				var span = (output.ToOffset(node.StartLocation.Line, node.StartLocation.Column), output.ToOffset(node.EndLocation.Line, node.EndLocation.Column));
 				// Nodes that define a function are annotated with its ILFunction. So are references to local functions
 				// (call sites), which must be ignored.
-				if (IsFunctionDefinition(node) && node.Annotation<ILFunction>() is ILFunction function && !spans.ByFunction.ContainsKey(function))
+				if (IsFunctionDefinition(node) && node.Annotation<ILFunction>() is ILFunction function && !spans.ByFunction.ContainsKey(function)) {
 					spans.ByFunction.Add(function, span);
+					if (node.Children.OfType<BlockStatement>().FirstOrDefault() is BlockStatement block && !block.EndLocation.IsEmpty) {
+						int braceEnd = output.ToOffset(block.EndLocation.Line, block.EndLocation.Column);
+						spans.ClosingBraces[function] = TextSpan.FromBounds(braceEnd - 1, braceEnd);
+					}
+				}
 				if (node is EntityDeclaration decl && decl.GetSymbol() is UpstreamMethod method)
 					spans.ByMethod[method] = span;
 			}
