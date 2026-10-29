@@ -106,6 +106,8 @@ namespace dnSpy.Decompiler.Upstream.CorpusRunner {
 			var types = Sample(allTypes, maxTypes);
 
 			UpstreamCSharpDecompiler? upstream = null;
+			// "dnspy": the IDecompiler dnSpy uses (dnSpy's output, colors, references, braces, token comments)
+			var language = engine == "dnspy" ? new UpstreamCSharpLanguage(new Settings.UpstreamDecompilerSettings()) : null;
 			if (engine == "upstream") {
 				var cache = new ModuleBridgeCache(new ModuleBridgeOptions());
 				try {
@@ -125,7 +127,14 @@ namespace dnSpy.Decompiler.Upstream.CorpusRunner {
 				result.Types++;
 				var sw = Stopwatch.StartNew();
 				IReadOnlyList<string> repairs = Array.Empty<string>();
+				var outputErrors = new List<string>();
 				var outcome = RunOnThread<(string text, IReadOnlyList<MethodDebugInfo> infos)>(stackMB, typeTimeout, token => {
+					if (language is not null) {
+						var output = new CapturingDecompilerOutput();
+						language.Decompile(type, output, new DecompilationContext { CancellationToken = token, CalculateILSpans = true });
+						outputErrors.AddRange(CheckOutput(output));
+						return (output.Text, output.DebugInfos.ToArray());
+					}
 					if (upstream is not null) {
 						var r = upstream.DecompileType(type, token);
 						repairs = r.DebugInfoRepairs;
@@ -142,6 +151,11 @@ namespace dnSpy.Decompiler.Upstream.CorpusRunner {
 				switch (outcome.kind) {
 				case OutcomeKind.Ok:
 					result.Ok++;
+					result.DebugInfoErrors += outputErrors.Count;
+					foreach (var e in outputErrors.Take(1)) {
+						if (result.DebugInfoErrorSamples.Count < 5)
+							result.DebugInfoErrorSamples.Add($"{SafeName(type)}: output: {Truncate(e, 250)}");
+					}
 					result.DebugInfoRepairs += repairs.Count;
 					foreach (var repair in repairs) {
 						if (result.DebugInfoRepairSamples.Count < 5)
@@ -174,6 +188,40 @@ namespace dnSpy.Decompiler.Upstream.CorpusRunner {
 			}
 			result.TotalMs = total.Elapsed.TotalMilliseconds;
 			return Write(options, result);
+		}
+
+		/// <summary>
+		/// What dnSpy's document viewer relies on: brace pairs at the braces, line separators and references
+		/// inside the text, no upstream objects as references
+		/// </summary>
+		static IEnumerable<string> CheckOutput(CapturingDecompilerOutput output) {
+			var text = output.Text;
+			foreach (var pair in output.BracePairs) {
+				if (pair.Left.End > text.Length || pair.Right.End > text.Length || pair.Left.End > pair.Right.Start) {
+					yield return $"brace pair out of range {pair.Left} {pair.Right}";
+					continue;
+				}
+				var expected = pair.Flags.ToBraceKind() switch {
+					CodeBracesRangeFlags.BraceKind_CurlyBraces => "{}",
+					CodeBracesRangeFlags.BraceKind_Parentheses => "()",
+					CodeBracesRangeFlags.BraceKind_SquareBrackets => "[]",
+					CodeBracesRangeFlags.BraceKind_AngleBrackets => "<>",
+					CodeBracesRangeFlags.BraceKind_DoubleQuotes => "\"\"",
+					CodeBracesRangeFlags.BraceKind_SingleQuotes => "''",
+					_ => "??",
+				};
+				var actual = text.Substring(pair.Left.Start, pair.Left.Length) + text.Substring(pair.Right.Start, pair.Right.Length);
+				if (actual != expected)
+					yield return $"brace pair {pair.Flags} at '{actual}'";
+			}
+			foreach (var p in output.LineSeparators) {
+				if (p < 0 || p >= text.Length || (text[p] != '}' && text[p] != ';'))
+					yield return $"line separator at {p}";
+			}
+			foreach (var span in output.References) {
+				if (span.Reference!.GetType().Namespace?.StartsWith("ICSharpCode", StringComparison.Ordinal) == true)
+					yield return $"upstream object as reference: {span}";
+			}
 		}
 
 		static int Write(Options options, AssemblyResult result) {

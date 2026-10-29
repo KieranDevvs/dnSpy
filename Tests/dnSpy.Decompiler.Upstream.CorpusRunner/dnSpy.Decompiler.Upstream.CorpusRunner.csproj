@@ -25,6 +25,7 @@
     <Compile Include="..\dnSpy.Decompiler.Upstream.Tests\Infrastructure\DebugInfoValidator.cs" Link="Shared\DebugInfoValidator.cs" />
     <Compile Include="..\dnSpy.Decompiler.Upstream.Tests\Infrastructure\PdbGroundTruth.cs" Link="Shared\PdbGroundTruth.cs" />
     <Compile Include="..\dnSpy.Decompiler.Upstream.Tests\Infrastructure\LegacyDecompiler.cs" Link="Shared\LegacyDecompiler.cs" />
+    <Compile Include="..\dnSpy.Decompiler.Upstream.Tests\Infrastructure\CapturingDecompilerOutput.cs" Link="Shared\CapturingDecompilerOutput.cs" />
   </ItemGroup>
 
   <ItemGroup>

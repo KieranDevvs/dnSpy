@@ -307,6 +307,8 @@ namespace dnSpy.Decompiler.Upstream.Tests {
 					Assert.InRange(statement.TextSpan.End, 0, output.Text.Length);
 			}
 			var exceptions = infos.First(i => i.Method.Name == "Exceptions");
+			// The expression evaluator resolves type names with the using declarations ("using System;" for Console)
+			Assert.Contains(exceptions.Scope.Imports, a => a.TargetKind == ImportInfoKind.Namespace && a.Target == "System");
 			Assert.Contains(exceptions.Statements, s => output.Text.Substring(s.TextSpan.Start, s.TextSpan.Length).StartsWith("Console.WriteLine(\"done\")", StringComparison.Ordinal));
 		}
 

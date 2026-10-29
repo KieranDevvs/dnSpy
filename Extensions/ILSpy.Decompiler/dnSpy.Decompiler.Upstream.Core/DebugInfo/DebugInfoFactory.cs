@@ -44,9 +44,11 @@ namespace dnSpy.Decompiler.Upstream.DebugInfo {
 		public static List<MethodDebugInfo> Create(SyntaxTree syntaxTree, IDictionary<ILFunction, List<UpstreamSequencePoint>> sequencePoints,
 			ILocationMapper output, ModuleBridgeCache cache, SourceVariableTable variables, int decompilerSettingsVersion, List<string> repairs) {
 			var spans = GetSpans(syntaxTree, output);
+			// The expression evaluator resolves type names with them
+			var imports = syntaxTree.Descendants.OfType<UsingDeclaration>().Select(a => a.Namespace).Where(a => !string.IsNullOrEmpty(a)).Distinct().ToArray();
 			var result = new List<MethodDebugInfo>(sequencePoints.Count);
 			foreach (var kv in sequencePoints) {
-				var info = Create(kv.Key, kv.Value, output, cache, variables, spans, decompilerSettingsVersion, repairs);
+				var info = Create(kv.Key, kv.Value, output, cache, variables, spans, imports, decompilerSettingsVersion, repairs);
 				if (info is not null)
 					result.Add(info);
 			}
@@ -54,7 +56,7 @@ namespace dnSpy.Decompiler.Upstream.DebugInfo {
 		}
 
 		static MethodDebugInfo? Create(ILFunction function, List<UpstreamSequencePoint> points, ILocationMapper output,
-			ModuleBridgeCache cache, SourceVariableTable variables, Spans spans, int decompilerSettingsVersion, List<string> repairs) {
+			ModuleBridgeCache cache, SourceVariableTable variables, Spans spans, string[] imports, int decompilerSettingsVersion, List<string> repairs) {
 			if (function.Method is null)
 				return null;
 			// IL offsets are offsets in the method whose body was decompiled: MoveNext() for async/iterator methods
@@ -77,6 +79,8 @@ namespace dnSpy.Decompiler.Upstream.DebugInfo {
 
 			builder.Scope.Span = ILSpan.FromBounds(0, (uint)(body is null ? function.CodeSize : body.GetCodeSize()));
 			builder.Scope.Locals.AddRange(GetLocals(function, variables));
+			foreach (var ns in imports)
+				builder.Scope.Imports.Add(ImportInfo.CreateNamespace(ns));
 			builder.Parameters = GetParameters(function, kickoffMethod ?? bodyMethod, cache);
 			if (function.IsAsync)
 				builder.AsyncInfo = GetAsyncInfo(function, bodyMethod, kickoffMethod);
