@@ -291,7 +291,7 @@ namespace dnSpy.Decompiler.Upstream.Tests.Infrastructure {
 		/// Names of locals and parameters in the original source and in the decompiled code. The decompiler renames
 		/// locals (it doesn't get the PDB), so these names aren't used to compare statements.
 		/// </summary>
-		static HashSet<string> GetVariableNames(MethodDebugInfo info, PdbMethodInfo pdb) {
+		internal static HashSet<string> GetVariableNames(MethodDebugInfo info, PdbMethodInfo pdb) {
 			var names = new HashSet<string>(pdb.LocalNames.Values);
 			foreach (var method in new[] { info.Method, info.KickoffMethod }) {
 				if (method is null)
@@ -322,7 +322,7 @@ namespace dnSpy.Decompiler.Upstream.Tests.Infrastructure {
 		/// literal. Returns null if there's nothing to compare: braces (the decompiler has no brace statements, so it
 		/// attributes a brace's nop to the next statement) or statements that only use variables.
 		/// </summary>
-		static bool? IsSameCode(string original, string decompiled, HashSet<string> variableNames) {
+		internal static bool? IsSameCode(string original, string decompiled, HashSet<string> variableNames) {
 			if (IsBrace(original) || IsBrace(decompiled))
 				return null;
 			var a = Words(original, variableNames);

@@ -38,7 +38,7 @@ namespace dnSpy.Decompiler.Upstream.Tests {
 					foreach (var v in values)
 						sum -= v;
 					while (sum < 100)
-						sum *= 2;
+						sum += 25;
 					do {
 						sum--;
 					} while (sum > 1000);
