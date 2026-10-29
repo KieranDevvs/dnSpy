@@ -45,6 +45,12 @@ namespace dnSpy.Decompiler.Upstream.Output {
 		readonly SourceVariableTable variables;
 		// Positions in 'output' where each line starts. A line start is where the line's indentation (if any) starts.
 		readonly List<int> lineStarts = new List<int>();
+		// Upstream computes an identifier's end location from its name, but the written name can be longer
+		// ('@', escaped characters) or shorter (truncated). Maps the computed location (and the few columns
+		// after it that upstream derives from it, eg. "catch (Exception ex)" ends one column after the name)
+		// to the real position. Key: line.
+		Dictionary<int, List<(int computedColumn, int realEnd)>>? identifierEnds;
+		const int MaxColumnsAfterIdentifier = 3;
 		StringBuilder? buffer;
 		object? bufferColor;
 		int bufferStart;
@@ -98,11 +104,33 @@ namespace dnSpy.Decompiler.Upstream.Output {
 		public TextLocation Location => new TextLocation(lineStarts.Count, NextPosition - lineStarts[lineStarts.Count - 1] + 1);
 
 		public int ToOffset(int line, int column) {
+			if (identifierEnds is not null && identifierEnds.TryGetValue(line, out var ends)) {
+				foreach (var (computedColumn, realEnd) in ends) {
+					if (computedColumn <= column && column <= computedColumn + MaxColumnsAfterIdentifier)
+						return realEnd + (column - computedColumn);
+				}
+			}
 			if (line < 1)
 				return lineStarts[0];
 			if (line > lineStarts.Count)
 				return output.NextPosition;
 			return lineStarts[line - 1] + Math.Max(0, column - 1);
+		}
+
+		/// <summary>
+		/// Called after an identifier was written: upstream's computed end location of the identifier is
+		/// <paramref name="computedEnd"/>, the real end is the current position
+		/// </summary>
+		public void SetIdentifierEnd(TextLocation computedEnd) {
+			if (computedEnd.IsEmpty)
+				return;
+			int end = NextPosition;
+			if (ToOffset(computedEnd.Line, computedEnd.Column) == end)
+				return;
+			identifierEnds ??= new Dictionary<int, List<(int, int)>>();
+			if (!identifierEnds.TryGetValue(computedEnd.Line, out var ends))
+				identifierEnds.Add(computedEnd.Line, ends = new List<(int, int)>());
+			ends.Add((computedEnd.Column, end));
 		}
 
 		// Upstream sets it to the formatting options' indentation; dnSpy's output does its own indentation
@@ -260,8 +288,8 @@ namespace dnSpy.Decompiler.Upstream.Output {
 				break;
 
 			default:
-				// Range variables of query expressions
-				dnSpyReference = reference;
+				// Range variables of query expressions ('let'): use an object dnSpy knows (tooltips)
+				dnSpyReference = variables.GetRangeVariable(reference, text);
 				color = BoxedTextColor.Local;
 				break;
 			}

@@ -150,6 +150,7 @@ namespace dnSpy.Decompiler.Upstream.Output {
 				output.IdentifierReferenceFlags = referenceFlags;
 				try {
 					base.WriteIdentifier(identifier);
+					output.SetIdentifierEnd(identifier.EndLocation);
 				}
 				finally {
 					output.IsIdentifier = false;

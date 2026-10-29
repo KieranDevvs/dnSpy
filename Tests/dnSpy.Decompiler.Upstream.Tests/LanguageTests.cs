@@ -312,6 +312,55 @@ namespace dnSpy.Decompiler.Upstream.Tests {
 			Assert.Contains(exceptions.Statements, s => output.Text.Substring(s.TextSpan.Start, s.TextSpan.Length).StartsWith("Console.WriteLine(\"done\")", StringComparison.Ordinal));
 		}
 
+		/// <summary>
+		/// dnSpy truncates very long names and escapes '@' and invalid characters, so the text is shorter or longer
+		/// than the name; upstream computes some statement ends from the name's length
+		/// </summary>
+		[Fact]
+		public void StatementsEndingAtRewrittenIdentifiers_HaveValidTextSpans() {
+			// Upstream names a catch variable after its type: "a" + 900 x "A", truncated by dnSpy
+			var longName = new string('A', 901);
+			var source = $$"""
+				using System;
+				public class {{longName}} : Exception { }
+				public class Event : Exception { }
+				public class Names {
+					public static string Catch(string s) {
+						try {
+							return s.Trim();
+						}
+						catch ({{longName}} e) {
+							return e.Message;
+						}
+					}
+					public static int Keyword(int @class) {
+						try {
+							return @class / 2;
+						}
+						catch (Event e) {
+							return e.HResult;
+						}
+					}
+				}
+				""";
+			var type = Find(TestCompiler.Compile("Names", source).Load(), "Names");
+			var output = LanguageRunner.Decompile(LanguageRunner.Create(), type);
+			Assert.DoesNotContain(longName, output.Text);
+			Assert.Contains(" a" + longName.Substring(0, 400), output.Text);
+			Assert.Contains("@class", output.Text);
+			var infos = output.DebugInfos.ToArray();
+			Assert.Equal(2, infos.Length);
+			foreach (var info in infos) {
+				var errors = DebugInfoValidator.Validate(info, output.Text, null).Errors;
+				foreach (var e in errors)
+					log.WriteLine($"{info.Method.Name}: {e.Substring(0, Math.Min(300, e.Length))}");
+				Assert.Empty(errors);
+				// The catch statement ends at its ')'
+				var catchStatement = info.Statements.Single(s => output.Text.Substring(s.TextSpan.Start, s.TextSpan.Length).StartsWith("catch", StringComparison.Ordinal));
+				Assert.Equal(')', output.Text[catchStatement.TextSpan.End - 1]);
+			}
+		}
+
 		[Fact]
 		public void OutputWithoutCustomData_HasTheSameText() {
 			var module = TestCompiler.Compile("ControlFlow", TestPrograms.ControlFlow).Load();

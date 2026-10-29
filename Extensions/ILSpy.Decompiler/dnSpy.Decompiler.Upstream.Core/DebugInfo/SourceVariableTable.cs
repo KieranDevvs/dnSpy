@@ -68,6 +68,19 @@ namespace dnSpy.Decompiler.Upstream.DebugInfo {
 			return md.Parameters[dnlibIndex];
 		}
 
+		readonly Dictionary<object, SourceLocal> rangeVariables = new Dictionary<object, SourceLocal>();
+
+		/// <summary>
+		/// Gets the reference of a query range variable that isn't an IL variable (eg. 'let x = ...')
+		/// </summary>
+		public SourceLocal GetRangeVariable(object upstreamVariable, string name) {
+			if (!rangeVariables.TryGetValue(upstreamVariable, out var local)) {
+				local = new SourceLocal(null, name, typeSigConverter.ToTypeSig(null), SourceVariableFlags.None);
+				rangeVariables.Add(upstreamVariable, local);
+			}
+			return local;
+		}
+
 		/// <summary>
 		/// Gets the local of a variable (not a parameter)
 		/// </summary>
