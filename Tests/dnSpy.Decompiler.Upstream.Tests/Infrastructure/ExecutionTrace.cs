@@ -108,7 +108,9 @@ namespace dnSpy.Decompiler.Upstream.Tests.Infrastructure {
 					Exception? error = null;
 					var thread = new Thread(() => {
 						try {
-							method.Invoke(null, null);
+							// async Task Main()
+							if (method.Invoke(null, null) is System.Threading.Tasks.Task task)
+								task.GetAwaiter().GetResult();
 						}
 						catch (Exception ex) {
 							error = ex;

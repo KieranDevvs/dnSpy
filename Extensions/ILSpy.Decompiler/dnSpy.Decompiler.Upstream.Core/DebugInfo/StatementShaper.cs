@@ -128,29 +128,16 @@ namespace dnSpy.Decompiler.Upstream.DebugInfo {
 				spans.Add((start, end, s.TextSpan));
 			}
 
-			// Extend over unattributed IL while the statement's expression is still being evaluated, or while that IL
-			// uses a compiler temporary the statement stored
-			for (int si = 0; si < spans.Count; si++) {
-				var (start, end, text) = spans[si];
-				// The stack can hold values of earlier statements (optimized code keeps a variable on the stack)
-				int baseDepth = flow.StackDepth[start];
-				int newEnd = end;
-				bool continues = end < count && baseDepth >= 0 && flow.StackDepth[end] > baseDepth && ConsumesStack(flow, end, count);
-				while (newEnd < count && owner[newEnd] < 0 && flow.Block[newEnd] == flow.Block[newEnd - 1]) {
-					if (continues && flow.StackDepth[newEnd] > baseDepth) {
-						owner[newEnd++] = si;
-						continue;
-					}
-					if (flow.StackDepth[newEnd] != baseDepth)
-						break;
-					int runEnd = GetTemporaryRunEnd(flow, owner, start, newEnd, context.VisibleLocals);
-					if (runEnd <= newEnd)
-						break;
-					while (newEnd < runEnd)
-						owner[newEnd++] = si;
-				}
-				if (newEnd != end)
-					spans[si] = (start, newEnd, text);
+			// Pieces are entered at their start only. Splitting reveals more continuations (e.g. the arm of a
+			// conditional expression that another statement got), so do it twice.
+			for (int pass = 0; pass < 2; pass++) {
+				// A statement that starts in the middle of the previous one's expression is fixed first, so the
+				// extension knows where each statement's expression starts
+				ReclaimExpressionContinuations(flow, spans, owner, context.ClosingBrace);
+				ExtendStatements(flow, spans, owner, context);
+				spans = SplitAtEntries(flow, spans);
+				RebuildOwners(spans, owner);
+				ReassignPiecesOfOtherStatements(flow, spans, owner);
 			}
 
 			// The epilogue (load the return value, ret) is the closing brace. In an async method, it's where the state
@@ -192,14 +179,6 @@ namespace dnSpy.Decompiler.Upstream.DebugInfo {
 					RebuildOwners(spans, owner);
 			}
 
-			// Pieces are entered at their start only. Splitting reveals more continuations (e.g. the arm of a
-			// conditional expression that another statement got), so do it twice.
-			for (int pass = 0; pass < 2; pass++) {
-				ReclaimExpressionContinuations(flow, spans, owner, context.ClosingBrace);
-				spans = SplitAtEntries(flow, spans);
-				RebuildOwners(spans, owner);
-				ReassignPiecesOfOtherStatements(flow, spans, owner);
-			}
 
 			// Conditions' tails attributed to the next statement
 			for (int si = 0; si < spans.Count; si++) {
@@ -422,6 +401,36 @@ namespace dnSpy.Decompiler.Upstream.DebugInfo {
 			}
 			foreach (int source in flow.BranchSources(index))
 				yield return source;
+		}
+
+		/// <summary>
+		/// Extends statements over unattributed IL while the statement's expression is still being evaluated, or while
+		/// that IL uses a compiler temporary the statement stored
+		/// </summary>
+		static void ExtendStatements(MethodFlow flow, List<(int start, int end, TextSpan text)> spans, int[] owner, ShapeContext context) {
+			int count = flow.Count;
+			for (int si = 0; si < spans.Count; si++) {
+				var (start, end, text) = spans[si];
+				// The stack can hold values of earlier statements (optimized code keeps a variable on the stack)
+				int baseDepth = flow.StackDepth[start];
+				int newEnd = end;
+				bool continues = end < count && baseDepth >= 0 && flow.StackDepth[end] > baseDepth && ConsumesStack(flow, end, count);
+				while (newEnd < count && owner[newEnd] < 0 && flow.Block[newEnd] == flow.Block[newEnd - 1]) {
+					if (continues && flow.StackDepth[newEnd] > baseDepth) {
+						owner[newEnd++] = si;
+						continue;
+					}
+					if (flow.StackDepth[newEnd] != baseDepth)
+						break;
+					int runEnd = GetTemporaryRunEnd(flow, owner, start, newEnd, context.VisibleLocals);
+					if (runEnd <= newEnd)
+						break;
+					while (newEnd < runEnd)
+						owner[newEnd++] = si;
+				}
+				if (newEnd != end)
+					spans[si] = (start, newEnd, text);
+			}
 		}
 
 		/// <summary>

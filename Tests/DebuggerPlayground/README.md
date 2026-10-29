@@ -1,0 +1,41 @@
+# Debugger playground
+
+A small program for checking dnSpy's debugger on decompiled code by hand, on Windows. Each scenario is a case
+where the upstream decompiler's debug info sent breakpoints, stepping or the call stack to the wrong code before
+dnSpy's adapter fixed it. The same program also runs in the automated stepping tests
+(`Tests/dnSpy.Decompiler.Upstream.Tests/SteppingTests.cs`), which replay dnSpy's stepper over its execution trace on
+Linux, so this checklist is about what only the real debugger can show: the UI, the JIT and CorDebug.
+
+## Setup
+
+1. Build it: `dotnet build Tests\DebuggerPlayground -c Release` (also try `-c Debug` once; optimized code is the
+   harder case). There's no PDB on purpose, so dnSpy uses the decompiler's debug info.
+2. In dnSpy, select the **C# (ILSpy 11.2)** language and open
+   `Tests\DebuggerPlayground\bin\Release\net10.0\DebuggerPlayground.dll`.
+3. Debug → Start Debugging (F5) → Executable: the `DebuggerPlayground.exe` next to the dll. Set breakpoints in
+   `DebuggerPlayground.Scenarios` before starting, or start with "Break at: Entry point".
+
+## Scenarios (method in `Scenarios`: what to do, what must happen)
+
+| # | Method | Do | Expected |
+|---|---|---|---|
+| 1 | `Switch` | Breakpoint on `return 10;` | Stops once (value 1), not for 2 or 7 |
+| 2 | `Break` | Breakpoint on `break;` | Stops once (the empty string), not on every iteration |
+| 3 | `Continue` | Breakpoint on `sum += values[i];` (or `num += ...`) | Stops for 1 and 3, not for 20 |
+| 4 | `DoWhile` | Breakpoint on `return n;` | Stops once |
+| 5 | `Raise`, `Set` | Breakpoint on the statement, then F10 | The step goes to the closing brace with the statement done (`value` assigned), not to `}` in the middle of it |
+| 6 | `Conditional` | Breakpoint on `Console.Write("");` | Stops for both calls (the decompiled `if`/`?:` shape can differ from the source) |
+| 7 | `Catch` | Breakpoint in the catch block | `ex` is in Locals and hovering `ex` shows the IOException |
+| 8 | `Captured` | Breakpoint on `return f(...)` / `return func(...)`, Watch `captured` | Shows 3 |
+| 9 | `Name` property | Breakpoints on `get;` and `set;` | Both are hit |
+| 10 | `ComputeAsync` | Breakpoint on the first statement, F10 repeatedly | Each await steps to the next statement (also across `await Task.Delay`/`Task.Yield`, which resume on another thread) |
+| 11 | `ThrowAsync`/`InnerAsync` | Debug → Windows → Exception Settings: break when `InvalidOperationException` is thrown | The `InnerAsync` frame highlights the `throw` |
+| 12 | `Resources` | F10 through it | Steps through `lock`, `using`, the `while` and the `foreach`; no stop on a line that doesn't run |
+| 13 | `Outer`/`Middle`/`Inner` | Break when `ArgumentException` is thrown, double-click the frames in the Call Stack | `Inner` highlights the `throw`, `Middle` highlights `list.ForEach(...)`, `Outer` its call |
+
+Also worth a look while stopped: the Locals window shouldn't list temporaries like `V_3` that aren't in the code,
+and switching the language to the legacy C# and back while stopped should keep the current statement highlighted.
+
+Known differences from a compiler PDB (the automated tests measure them): an implicit base constructor call and,
+in `Conditional`, one arm of the merged conditional have no statement, so a frame stopped in those calls shows
+no current statement.

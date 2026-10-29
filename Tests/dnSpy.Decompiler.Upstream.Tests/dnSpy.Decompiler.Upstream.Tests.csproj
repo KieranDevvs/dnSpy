@@ -37,6 +37,8 @@
 
   <ItemGroup>
     <None Include="$(PkgNewtonsoft_Json)\lib\netstandard2.0\Newtonsoft.Json.dll" Link="Samples\netstandard2.0\Newtonsoft.Json.dll" CopyToOutputDirectory="PreserveNewest" />
+    <!-- The program for checking the debugger by hand: the stepping tests run it too -->
+    <None Include="..\DebuggerPlayground\Program.cs" Link="Samples\DebuggerPlayground.cs" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
   <!--

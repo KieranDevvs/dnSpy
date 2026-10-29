@@ -32,6 +32,7 @@ namespace dnSpy.Decompiler.Upstream.CorpusRunner {
 	/// </summary>
 	static class Inspect {
 		public static int Run(Options options) {
+			dnSpy.Decompiler.Upstream.DebugInfo.StatementShaper.OnError = (method, ex) => Console.WriteLine($"SHAPER ERROR {method.FullName}: {ex}");
 			var module = ModuleDefMD.Load(options.Paths.Single(), AssemblyRunner.CreateModuleContext(options.Paths.Single()));
 			var typeName = options.Get("type");
 			var methodName = options.Get("method", "");
