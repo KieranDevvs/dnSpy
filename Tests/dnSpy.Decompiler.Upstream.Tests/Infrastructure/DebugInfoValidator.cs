@@ -105,35 +105,18 @@ namespace dnSpy.Decompiler.Upstream.Tests.Infrastructure {
 
 			var entries = ControlFlowEntries.Calculate(body);
 			var ilOwner = new Dictionary<uint, TextSpan>();
+			// (Linear in the number of statements and instructions: the corpus has methods with 20,000 statements)
+			var instrOffsets = body.Instructions.Select(i => i.Offset).ToArray();
+			IEnumerable<Instruction> InstructionsIn(ILSpan span) {
+				int index = System.Array.BinarySearch(instrOffsets, span.Start);
+				if (index < 0)
+					index = ~index;
+				for (; index < instrOffsets.Length && instrOffsets[index] < span.End; index++)
+					yield return body.Instructions[index];
+			}
 			foreach (var statement in info.Statements) {
-				// dnSpy binds a breakpoint to the first instruction of each IL span of the statement. If the span can be
-				// entered elsewhere (a branch from outside the span), the breakpoint misses those executions and fires
-				// when only the first part runs (e.g. a 'continue' jump attributed to the next statement).
-				// (A branch from another IL span of the same statement is fine: its breakpoint fired already)
-				foreach (var (target, source) in entries) {
-					if (target > statement.ILSpan.Start && target < statement.ILSpan.End && (source is not uint s || !info.Statements.Any(o => o.TextSpan == statement.TextSpan && o.ILSpan.Start <= s && s < o.ILSpan.End)))
-						report.Errors.Add($"Statement {statement} can be entered at IL_{target:X4} " + (source is uint from ? $"from IL_{from:X4}" : "(exception handler)") + " without executing its first instruction");
-				}
 				var il = statement.ILSpan;
 				var ts = statement.TextSpan;
-				// A simple statement (not an if/loop/switch header) only branches within itself or to its end
-				// (e.g. a?.M()). A conditional branch elsewhere means it starts with another statement's code, e.g. the
-				// tail of an if condition attributed to the 'break' in its body: a breakpoint on it would fire when it
-				// doesn't run. The end of a break/continue/goto is where it jumps anyway, so it can't be a target.
-				if (ts.Start >= 0 && ts.End <= text.Length && GetStatementKind(text, ts) is StatementKind kind && kind != StatementKind.ControlFlow) {
-					foreach (var instr in body.Instructions) {
-						if (instr.Offset < il.Start || instr.Offset >= il.End || instr.OpCode.FlowControl != FlowControl.Cond_Branch)
-							continue;
-						var targets = instr.Operand is Instruction t ? new[] { t } : instr.Operand as IList<Instruction> ?? System.Array.Empty<Instruction>();
-						foreach (var target in targets) {
-							bool inside = target.Offset >= il.Start && (target.Offset < il.End || (target.Offset == il.End && kind != StatementKind.Jump));
-							// A branch to IL without a statement can be the statement's own code (e.g. the arms of a
-							// conditional expression that the decompiler didn't attribute)
-							if (!inside && info.Statements.Any(o => o.TextSpan != ts && o.ILSpan.Start <= target.Offset && target.Offset < o.ILSpan.End))
-								report.Errors.Add($"Statement {statement} contains another statement's branch (IL_{instr.Offset:X4} to IL_{target.Offset:X4})");
-						}
-					}
-				}
 				if (!offsets.Contains(il.Start))
 					report.Errors.Add($"Statement {statement} starts inside an instruction");
 				if (il.End != codeSize && !offsets.Contains(il.End))
@@ -151,12 +134,51 @@ namespace dnSpy.Decompiler.Upstream.Tests.Infrastructure {
 				if (stackDepths.TryGetValue(il.Start, out int depth) && depth != 0)
 					report.NonEmptyStackStarts++;
 
-				foreach (var instr in body.Instructions) {
-					if (instr.Offset < il.Start || instr.Offset >= il.End)
-						continue;
+				foreach (var instr in InstructionsIn(il)) {
 					if (ilOwner.TryGetValue(instr.Offset, out var other) && other != ts)
 						report.Errors.Add($"IL_{instr.Offset:X4} belongs to two different statements: {other} and {ts}");
 					ilOwner[instr.Offset] = ts;
+				}
+			}
+			var statementAt = new Dictionary<uint, SourceStatement>();
+			foreach (var statement in info.Statements) {
+				foreach (var instr in InstructionsIn(statement.ILSpan))
+					statementAt[instr.Offset] = statement;
+			}
+
+			// dnSpy binds a breakpoint to the first instruction of each IL span of the statement. If the span can be
+			// entered elsewhere (a branch from outside the span), the breakpoint misses those executions and fires
+			// when only the first part runs (e.g. a 'continue' jump attributed to the next statement).
+			// (A branch from another IL span of the same statement is fine: its breakpoint fired already)
+			foreach (var (target, source) in entries) {
+				if (!statementAt.TryGetValue(target, out var statement) || target == statement.ILSpan.Start)
+					continue;
+				if (source is uint s && ilOwner.TryGetValue(s, out var sourceText) && sourceText == statement.TextSpan)
+					continue;
+				report.Errors.Add($"Statement {statement} can be entered at IL_{target:X4} " + (source is uint from ? $"from IL_{from:X4}" : "(exception handler)") + " without executing its first instruction");
+			}
+
+			// A simple statement (not an if/loop/switch header) only branches within itself or to its end (e.g.
+			// a?.M()). A conditional branch elsewhere means it starts with another statement's code, e.g. the tail of an
+			// if condition attributed to the 'break' in its body: a breakpoint on it would fire when it doesn't run. The
+			// end of a break/continue/goto is where it jumps anyway, so it can't be a target.
+			var kinds = new Dictionary<TextSpan, StatementKind?>();
+			foreach (var instr in body.Instructions) {
+				if (instr.OpCode.FlowControl != FlowControl.Cond_Branch || !statementAt.TryGetValue(instr.Offset, out var statement))
+					continue;
+				var il = statement.ILSpan;
+				var ts = statement.TextSpan;
+				if (!kinds.TryGetValue(ts, out var kind))
+					kinds[ts] = kind = ts.Start >= 0 && ts.End <= text.Length ? GetStatementKind(text, ts) : null;
+				if (kind is null || kind == StatementKind.ControlFlow)
+					continue;
+				var targets = instr.Operand is Instruction t ? new[] { t } : instr.Operand as IList<Instruction> ?? System.Array.Empty<Instruction>();
+				foreach (var target in targets) {
+					bool inside = target.Offset >= il.Start && (target.Offset < il.End || (target.Offset == il.End && kind != StatementKind.Jump));
+					// A branch to IL without a statement can be the statement's own code (e.g. the arms of a conditional
+					// expression that the decompiler didn't attribute)
+					if (!inside && ilOwner.TryGetValue(target.Offset, out var targetText) && targetText != ts)
+						report.Errors.Add($"Statement {statement} contains another statement's branch (IL_{instr.Offset:X4} to IL_{target.Offset:X4})");
 				}
 			}
 

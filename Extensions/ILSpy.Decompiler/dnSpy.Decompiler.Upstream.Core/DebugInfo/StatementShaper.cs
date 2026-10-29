@@ -181,6 +181,9 @@ namespace dnSpy.Decompiler.Upstream.DebugInfo {
 
 
 			// Conditions' tails attributed to the next statement
+			var pieceCount = new Dictionary<TextSpan, int>();
+			foreach (var span in spans)
+				pieceCount[span.text] = pieceCount.TryGetValue(span.text, out int n) ? n + 1 : 1;
 			for (int si = 0; si < spans.Count; si++) {
 				var (start, end, text) = spans[si];
 				var kind = getKind(text);
@@ -201,13 +204,9 @@ namespace dnSpy.Decompiler.Upstream.DebugInfo {
 					continue;
 				// The whole piece is the condition: only if the statement has another piece (its own code)
 				if (cut >= end) {
-					bool hasOtherSpan = false;
-					for (int other = 0; other < spans.Count; other++) {
-						if (other != si && spans[other].text == text && spans[other].end > spans[other].start)
-							hasOtherSpan = true;
-					}
-					if (!hasOtherSpan)
+					if (pieceCount[text] < 2)
 						continue;
+					pieceCount[text]--;
 					cut = end;
 				}
 				// The previous statement gets it if the condition is its own
@@ -283,33 +282,52 @@ namespace dnSpy.Decompiler.Upstream.DebugInfo {
 			// Fill the gaps between two pieces of a statement that only contain the closing brace's IL entered from
 			// the first piece (the null path's ret of 'Error?.Invoke(this, e);')
 			if (brace is TextSpan braceText) {
-				for (int si = 0; si < spans.Count; si++) {
-					var text = spans[si].text;
-					if (text == braceText)
+				const int MaxGap = 4;
+				var gaps = new List<(int start, int end, TextSpan text)>();
+				foreach (var (_, pieceEnd, text) in spans) {
+					if (text == braceText || pieceEnd >= flow.Count)
 						continue;
-					int gapStart = spans[si].end;
-					int next = spans.FindIndex(a => a.text == text && a.start > gapStart);
-					if (next < 0)
+					int gapStart = pieceEnd;
+					int gapEnd = gapStart;
+					while (gapEnd < flow.Count && gapEnd - gapStart < MaxGap && owner[gapEnd] >= 0 && spans[owner[gapEnd]].text == braceText)
+						gapEnd++;
+					if (gapEnd == gapStart || gapEnd >= flow.Count || owner[gapEnd] < 0 || spans[owner[gapEnd]].text != text)
 						continue;
-					int gapEnd = spans[next].start;
-					bool fill = gapEnd > gapStart && gapEnd - gapStart <= 4;
+					bool fill = true;
 					for (int i = gapStart; fill && i < gapEnd; i++) {
-						if (owner[i] < 0 || spans[owner[i]].text != braceText)
-							fill = false;
-						else if (i != gapStart && flow.BranchSources(i).Any())
+						if (i != gapStart && flow.BranchSources(i).Any())
 							fill = false;
 						else if (i == gapStart && flow.BranchSources(i).Any(b => owner[b] < 0 || spans[owner[b]].text != text))
 							fill = false;
 					}
-					if (!fill)
-						continue;
-					for (int i = 0; i < spans.Count; i++) {
-						var a = spans[i];
-						if (a.text == braceText && a.start < gapEnd && a.end > gapStart)
-							spans[i] = a.start < gapStart ? (a.start, gapStart, a.text) : (gapEnd, a.end, a.text);
+					if (fill)
+						gaps.Add((gapStart, gapEnd, text));
+				}
+				if (gaps.Count != 0) {
+					var newText = new TextSpan?[flow.Count];
+					foreach (var (gapStart, gapEnd, text) in gaps) {
+						for (int i = gapStart; i < gapEnd; i++)
+							newText[i] = text;
 					}
-					spans.Add((gapStart, gapEnd, text));
-					spans.RemoveAll(a => a.end <= a.start);
+					// Cut the gaps out of the brace's pieces (a piece can lose its start, end or middle)
+					var result = new List<(int start, int end, TextSpan text)>(spans.Count + gaps.Count);
+					foreach (var span in spans) {
+						if (span.text != braceText) {
+							result.Add(span);
+							continue;
+						}
+						int pieceStart = span.start;
+						for (int i = span.start; i <= span.end; i++) {
+							if (i == span.end || newText[i] is not null) {
+								if (i > pieceStart)
+									result.Add((pieceStart, i, span.text));
+								pieceStart = i + 1;
+							}
+						}
+					}
+					result.AddRange(gaps);
+					spans.Clear();
+					spans.AddRange(result);
 					RebuildOwners(spans, owner);
 				}
 			}
@@ -338,14 +356,14 @@ namespace dnSpy.Decompiler.Upstream.DebugInfo {
 		/// </summary>
 		static void ReassignPiecesOfOtherStatements(MethodFlow flow, List<(int start, int end, TextSpan text)> spans, int[] owner) {
 			bool changed = false;
+			var lastPiece = new Dictionary<TextSpan, int>();
+			for (int i = 0; i < spans.Count; i++) {
+				if (!lastPiece.TryGetValue(spans[i].text, out int last) || spans[i].start > spans[last].start)
+					lastPiece[spans[i].text] = i;
+			}
 			for (int si = 0; si < spans.Count; si++) {
 				var (start, end, text) = spans[si];
-				int last = -1;
-				for (int i = 0; i < spans.Count; i++) {
-					if (spans[i].text == text && (last < 0 || spans[i].start > spans[last].start))
-						last = i;
-				}
-				if (last == si || flow.IsHandlerStart[start])
+				if (lastPiece[text] == si || flow.IsHandlerStart[start])
 					continue;
 				int? from = null;
 				bool ok = true;
