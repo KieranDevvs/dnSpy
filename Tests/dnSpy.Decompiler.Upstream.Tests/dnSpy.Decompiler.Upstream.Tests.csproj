@@ -9,6 +9,8 @@
   <PropertyGroup>
     <TargetFrameworks>net10.0-windows</TargetFrameworks>
     <IsPackable>false</IsPackable>
+    <!-- build.ps1 publishes the whole solution self-contained; test tools aren't part of the dnSpy distribution -->
+    <IsPublishable>false</IsPublishable>
     <IsTestProject>true</IsTestProject>
     <Nullable>enable</Nullable>
     <SignAssembly>True</SignAssembly>

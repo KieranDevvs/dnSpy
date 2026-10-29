@@ -17,6 +17,8 @@
     <!-- The legacy decompiler references WPF projects; the code paths used here don't need WPF -->
     <DisableTransitiveFrameworkReferences>true</DisableTransitiveFrameworkReferences>
     <IsPackable>false</IsPackable>
+    <!-- build.ps1 publishes the whole solution self-contained; test tools aren't part of the dnSpy distribution -->
+    <IsPublishable>false</IsPublishable>
   </PropertyGroup>
 
   <ItemGroup>
