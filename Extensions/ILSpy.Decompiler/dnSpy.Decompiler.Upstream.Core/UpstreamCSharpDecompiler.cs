@@ -124,7 +124,8 @@ namespace dnSpy.Decompiler.Upstream {
 
 			var sequencePoints = decompiler.CreateSequencePoints(syntaxTree);
 			var repairs = new List<string>();
-			var debugInfos = DebugInfoFactory.Create(syntaxTree, sequencePoints, output, cache, decompilerSettingsVersion: 0, repairs);
+			var variables = new SourceVariableTable(cache, new TypeSigConverter(cache, module));
+			var debugInfos = DebugInfoFactory.Create(syntaxTree, sequencePoints, output, cache, variables, decompilerSettingsVersion: 0, repairs);
 			return new UpstreamDecompilationResult(output.ToString(), output.References, debugInfos, bridged) {
 				RawSequencePoints = sequencePoints,
 				DebugInfoRepairs = repairs,

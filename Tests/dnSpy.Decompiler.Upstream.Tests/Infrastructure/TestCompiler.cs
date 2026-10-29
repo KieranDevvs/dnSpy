@@ -81,6 +81,24 @@ namespace dnSpy.Decompiler.Upstream.Tests.Infrastructure {
 			return new CompiledProgram(name, pe.ToArray(), pdb.ToArray(), optimize);
 		}
 
+		/// <summary>
+		/// Compiles a program to a directory, with its XML documentation file next to it
+		/// </summary>
+		public static string CompileToDisk(string name, string source, string directory) {
+			Directory.CreateDirectory(directory);
+			var tree = CSharpSyntaxTree.ParseText(SourceText.From(source, Encoding.UTF8), new CSharpParseOptions(LanguageVersion.Preview, DocumentationMode.Diagnose), path: name + ".cs");
+			var compilation = CSharpCompilation.Create(name, new[] { tree }, references.Value,
+				new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary, nullableContextOptions: NullableContextOptions.Enable));
+			var dllPath = Path.Combine(directory, name + ".dll");
+			using (var pe = File.Create(dllPath))
+			using (var xml = File.Create(Path.Combine(directory, name + ".xml"))) {
+				var result = compilation.Emit(pe, xmlDocumentationStream: xml);
+				if (!result.Success)
+					throw new InvalidOperationException($"Test program '{name}' doesn't compile:{Environment.NewLine}" + string.Join(Environment.NewLine, result.Diagnostics.Where(d => d.Severity == DiagnosticSeverity.Error)));
+			}
+			return dllPath;
+		}
+
 		public static ModuleContext CreateModuleContext() {
 			var context = new ModuleContext();
 			var resolver = new AssemblyResolver(context) {

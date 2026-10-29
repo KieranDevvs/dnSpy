@@ -129,16 +129,10 @@ namespace dnSpy.Decompiler.Upstream.Tests {
 			var compiled = TestCompiler.Compile(program + (optimize ? "Release" : "Debug"), GetSource(program), optimize);
 			var pdb = PdbGroundTruth.Read(compiled.Pdb);
 
-			var decompiler = TestDecompiler.Create();
+			// The decompiler dnSpy uses (dnSpy's output, token comments, indentation by the output)
+			var language = LanguageRunner.Create();
 			var source = GetSource(program);
-			var repairs = new List<string>();
-			var upstream = Run("upstream", compiled.Load(), pdb, source, t => {
-				var r = decompiler.DecompileType(t);
-				repairs.AddRange(r.DebugInfoRepairs);
-				return (r.Text, r.MethodDebugInfos);
-			});
-			foreach (var repair in repairs)
-				log.WriteLine("  [upstream] REPAIRED " + repair);
+			var upstream = Run("upstream", compiled.Load(), pdb, source, t => LanguageRunner.DecompileType(language, t));
 			var legacy = Run("legacy", compiled.Load(), pdb, source, LegacyDecompiler.DecompileType);
 
 			Log(upstream);
@@ -185,21 +179,28 @@ namespace dnSpy.Decompiler.Upstream.Tests {
 		public void RealWorldAsync_InvalidUpstreamSequencePoints_AreRepaired() {
 			var path = System.IO.Path.Combine(AppContext.BaseDirectory, "Samples", "netstandard2.0", "Newtonsoft.Json.dll");
 			var module = ModuleDefMD.Load(path, TestCompiler.CreateModuleContext());
+			var type = module.Find("Newtonsoft.Json.JsonWriter", false);
+
+			// The adapter (reports what it repaired)
 			var decompiler = TestDecompiler.Create();
-			var result = decompiler.DecompileType(module.Find("Newtonsoft.Json.JsonWriter", false));
+			var result = decompiler.DecompileType(type);
 			foreach (var repair in result.DebugInfoRepairs)
 				log.WriteLine("REPAIRED " + repair);
-
 			var moveNext = result.MethodDebugInfos.Single(i => i.Method.DeclaringType.Name == "<<InternalWriteEndAsync>g__AwaitRemaining|11_3>d");
 			var report = DebugInfoValidator.Validate(moveNext, result.Text, null);
 			foreach (var e in report.Errors)
 				log.WriteLine("ERROR " + e);
-			foreach (var info in result.MethodDebugInfos) {
-				foreach (var e in DebugInfoValidator.Validate(info, result.Text, null).Errors)
-					log.WriteLine($"ERROR {info.Method.FullName}: {e}");
-			}
 			Assert.Empty(report.Errors);
 			Assert.Empty(result.MethodDebugInfos.SelectMany(i => DebugInfoValidator.Validate(i, result.Text, null).Errors));
+
+			// The decompiler dnSpy uses
+			var (text, infos) = LanguageRunner.DecompileType(LanguageRunner.Create(), type);
+			foreach (var info in infos) {
+				foreach (var e in DebugInfoValidator.Validate(info, text, null).Errors)
+					log.WriteLine($"ERROR {info.Method.FullName}: {e}");
+			}
+			Assert.Contains(infos, i => i.Method.DeclaringType.Name == "<<InternalWriteEndAsync>g__AwaitRemaining|11_3>d");
+			Assert.Empty(infos.SelectMany(i => DebugInfoValidator.Validate(i, text, null).Errors));
 		}
 
 		static double Ratio(int a, int b) => b == 0 ? 1 : (double)a / b;

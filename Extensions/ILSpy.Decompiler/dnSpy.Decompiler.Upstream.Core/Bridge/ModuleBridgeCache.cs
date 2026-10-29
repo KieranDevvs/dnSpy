@@ -111,7 +111,16 @@ namespace dnSpy.Decompiler.Upstream.Bridge {
 		}
 
 		/// <summary>
-		/// Forgets everything, e.g. when assemblies were added or removed (references may now resolve differently)
+		/// Keeps the bridged images but makes everything built from them (type systems) out of date, e.g. when
+		/// assemblies were added (references may now resolve differently)
+		/// </summary>
+		public void InvalidateTypeSystems() {
+			lock (lockObj)
+				generation++;
+		}
+
+		/// <summary>
+		/// Forgets everything, e.g. when assemblies were removed
 		/// </summary>
 		public void InvalidateAll() {
 			lock (lockObj) {

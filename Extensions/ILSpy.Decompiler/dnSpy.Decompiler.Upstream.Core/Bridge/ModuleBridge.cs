@@ -235,7 +235,7 @@ namespace dnSpy.Decompiler.Upstream.Bridge {
 			public bool IgnoresEvent(LoggerEvent loggerEvent) => loggerEvent != LoggerEvent.Error;
 		}
 
-		static PEFile OpenOriginal(ModuleDefMD module) {
+		internal static PEFile OpenOriginal(ModuleDefMD module) {
 			var peImage = module.Metadata.PEImage;
 			var bytes = peImage.CreateReader().ToArray();
 			var streamOptions = PEStreamOptions.PrefetchEntireImage;

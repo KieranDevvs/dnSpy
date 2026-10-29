@@ -38,21 +38,23 @@ namespace dnSpy.Decompiler.Upstream.DebugInfo {
 	/// <see cref="MethodDebugInfo"/>, which the debugger uses for breakpoints, stepping and locals.
 	/// </summary>
 	static class DebugInfoFactory {
+		/// <param name="output">Converts the text locations stored in the syntax tree to offsets in the output</param>
+		/// <param name="variables">Creates the locals, shared with the text output so both use the same objects</param>
 		/// <param name="repairs">Gets a description of each upstream sequence point that had to be dropped or fixed</param>
-		public static List<MethodDebugInfo> Create(SyntaxTree syntaxTree, Dictionary<ILFunction, List<UpstreamSequencePoint>> sequencePoints,
-			TrackingTextOutput output, ModuleBridgeCache cache, int decompilerSettingsVersion, List<string> repairs) {
+		public static List<MethodDebugInfo> Create(SyntaxTree syntaxTree, IDictionary<ILFunction, List<UpstreamSequencePoint>> sequencePoints,
+			ILocationMapper output, ModuleBridgeCache cache, SourceVariableTable variables, int decompilerSettingsVersion, List<string> repairs) {
 			var spans = GetSpans(syntaxTree, output);
 			var result = new List<MethodDebugInfo>(sequencePoints.Count);
 			foreach (var kv in sequencePoints) {
-				var info = Create(kv.Key, kv.Value, output, cache, spans, decompilerSettingsVersion, repairs);
+				var info = Create(kv.Key, kv.Value, output, cache, variables, spans, decompilerSettingsVersion, repairs);
 				if (info is not null)
 					result.Add(info);
 			}
 			return result;
 		}
 
-		static MethodDebugInfo? Create(ILFunction function, List<UpstreamSequencePoint> points, TrackingTextOutput output,
-			ModuleBridgeCache cache, Spans spans, int decompilerSettingsVersion, List<string> repairs) {
+		static MethodDebugInfo? Create(ILFunction function, List<UpstreamSequencePoint> points, ILocationMapper output,
+			ModuleBridgeCache cache, SourceVariableTable variables, Spans spans, int decompilerSettingsVersion, List<string> repairs) {
 			if (function.Method is null)
 				return null;
 			// IL offsets are offsets in the method whose body was decompiled: MoveNext() for async/iterator methods
@@ -74,7 +76,7 @@ namespace dnSpy.Decompiler.Upstream.DebugInfo {
 				builder.Add(statement);
 
 			builder.Scope.Span = ILSpan.FromBounds(0, (uint)(body is null ? function.CodeSize : body.GetCodeSize()));
-			builder.Scope.Locals.AddRange(GetLocals(function, body, cache));
+			builder.Scope.Locals.AddRange(GetLocals(function, variables));
 			builder.Parameters = GetParameters(function, kickoffMethod ?? bodyMethod, cache);
 			if (function.IsAsync)
 				builder.AsyncInfo = GetAsyncInfo(function, bodyMethod, kickoffMethod);
@@ -108,37 +110,23 @@ namespace dnSpy.Decompiler.Upstream.DebugInfo {
 			return set;
 		}
 
-		static IEnumerable<SourceLocal> GetLocals(ILFunction function, CilBody? body, ModuleBridgeCache cache) {
+		static IEnumerable<SourceLocal> GetLocals(ILFunction function, SourceVariableTable variables) {
 			// Upstream can split one IL slot into several variables (e.g. a reused slot in optimized code). The
 			// scope is method-wide, so keep one name per slot like upstream's own PDB writer does.
-			var seenSlots = new HashSet<int>();
+			var seenSlots = new HashSet<Local>();
 			var seenFields = new HashSet<FieldDef>();
 			foreach (var v in function.Variables) {
 				if (v.Kind == VariableKind.Parameter || v.Name is null)
 					continue;
-				// SourceLocal derives DecompilerGenerated itself (no IL local and no hoisted field)
-				var flags = SourceVariableFlags.None;
-				if (v.IsRefReadOnly)
-					flags |= SourceVariableFlags.ReadOnlyReference;
 				if (v.StateMachineField is not null) {
-					if (cache.ToDnlib(v.StateMachineField) is FieldDef hoistedField && seenFields.Add(hoistedField))
-						yield return new SourceLocal(null, v.Name, hoistedField, flags);
+					if (variables.GetHoistedField(v) is FieldDef hoistedField && seenFields.Add(hoistedField))
+						yield return variables.GetLocal(v);
 					continue;
 				}
-				if (v.Index is int index && body is not null && (uint)index < (uint)body.Variables.Count && IsILLocal(v.Kind) && seenSlots.Add(index)) {
-					var local = body.Variables[index];
-					yield return new SourceLocal(local, v.Name, local.Type, flags);
-				}
+				if (variables.GetILLocal(v) is Local local && seenSlots.Add(local))
+					yield return variables.GetLocal(v);
 			}
 		}
-
-		static bool IsILLocal(VariableKind kind) =>
-			kind switch {
-				VariableKind.Local or VariableKind.PinnedLocal or VariableKind.PinnedRegionLocal or VariableKind.UsingLocal or
-				VariableKind.ForeachLocal or VariableKind.InitializerTarget or VariableKind.ExceptionLocal or VariableKind.DisplayClassLocal or
-				VariableKind.PatternLocal => true,
-				_ => false,
-			};
 
 		static SourceParameter[] GetParameters(ILFunction function, MethodDef method, ModuleBridgeCache cache) {
 			var list = new List<SourceParameter>();
@@ -237,7 +225,7 @@ namespace dnSpy.Decompiler.Upstream.DebugInfo {
 			// Lambdas turned into query clauses (where, select, orderby...) keep their annotations
 			node is QueryClause;
 
-		static Spans GetSpans(SyntaxTree syntaxTree, TrackingTextOutput output) {
+		static Spans GetSpans(SyntaxTree syntaxTree, ILocationMapper output) {
 			var spans = new Spans();
 			foreach (var node in syntaxTree.Descendants) {
 				if (node.StartLocation.IsEmpty || node.EndLocation.IsEmpty)

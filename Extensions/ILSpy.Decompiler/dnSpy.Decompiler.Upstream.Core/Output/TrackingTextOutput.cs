@@ -67,10 +67,20 @@ namespace dnSpy.Decompiler.Upstream.Output {
 	}
 
 	/// <summary>
+	/// Converts the text locations the upstream decompiler stores in the syntax tree to offsets in the output
+	/// </summary>
+	interface ILocationMapper {
+		/// <summary>
+		/// Converts a (1-based) location to an offset in the output
+		/// </summary>
+		int ToOffset(int line, int column);
+	}
+
+	/// <summary>
 	/// <see cref="ITextOutput"/> that records references and knows the current line/column so the upstream
 	/// decompiler can store text locations in the syntax tree (needed to create sequence points).
 	/// </summary>
-	sealed class TrackingTextOutput : ITextOutput {
+	sealed class TrackingTextOutput : ITextOutput, ILocationMapper {
 		readonly StringBuilder sb = new StringBuilder();
 		readonly List<int> lineStarts = new List<int> { 0 };
 		readonly List<OutputReference> references = new List<OutputReference>();
