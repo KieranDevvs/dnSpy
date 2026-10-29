@@ -51,6 +51,7 @@ namespace dnSpy.Decompiler.Upstream.CorpusRunner {
 					"one" => AssemblyRunner.Run(options),
 					"generate" => SampleGenerator.Generate(options.Get("out"), options.Paths.Single()),
 					"inspect" => Inspect.Run(options),
+					"bridge-bench" => BridgeBenchmark.Run(options),
 					_ => throw new ArgumentException($"Unknown command '{args[0]}'"),
 				};
 			}

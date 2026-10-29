@@ -41,10 +41,10 @@ namespace dnSpy.Decompiler.Upstream.DebugInfo {
 		/// <param name="repairs">Gets a description of each upstream sequence point that had to be dropped or fixed</param>
 		public static List<MethodDebugInfo> Create(SyntaxTree syntaxTree, Dictionary<ILFunction, List<UpstreamSequencePoint>> sequencePoints,
 			TrackingTextOutput output, ModuleBridgeCache cache, int decompilerSettingsVersion, List<string> repairs) {
-			var methodSpans = GetMethodSpans(syntaxTree, output);
+			var spans = GetSpans(syntaxTree, output);
 			var result = new List<MethodDebugInfo>(sequencePoints.Count);
 			foreach (var kv in sequencePoints) {
-				var info = Create(kv.Key, kv.Value, output, cache, methodSpans, decompilerSettingsVersion, repairs);
+				var info = Create(kv.Key, kv.Value, output, cache, spans, decompilerSettingsVersion, repairs);
 				if (info is not null)
 					result.Add(info);
 			}
@@ -52,7 +52,7 @@ namespace dnSpy.Decompiler.Upstream.DebugInfo {
 		}
 
 		static MethodDebugInfo? Create(ILFunction function, List<UpstreamSequencePoint> points, TrackingTextOutput output,
-			ModuleBridgeCache cache, Dictionary<UpstreamMethod, (int start, int end)> methodSpans, int decompilerSettingsVersion, List<string> repairs) {
+			ModuleBridgeCache cache, Spans spans, int decompilerSettingsVersion, List<string> repairs) {
 			if (function.Method is null)
 				return null;
 			// IL offsets are offsets in the method whose body was decompiled: MoveNext() for async/iterator methods
@@ -76,8 +76,11 @@ namespace dnSpy.Decompiler.Upstream.DebugInfo {
 					continue;
 				int start = output.ToOffset(sp.StartLine, sp.StartColumn);
 				int end = output.ToOffset(sp.EndLine, sp.EndColumn);
-				if (end < start)
+				if (sp.StartLine <= 0 || end <= start) {
+					// The node has no text location (it wasn't written), nothing to map the IL to
+					repairs.Add($"{bodyMethod.FullName}: dropped statement IL_{sp.Offset:X4}-IL_{sp.EndOffset:X4} (no text location)");
 					continue;
+				}
 				uint ilStart = (uint)sp.Offset;
 				uint ilEnd = (uint)sp.EndOffset;
 				if (boundaries is not null) {
@@ -103,7 +106,12 @@ namespace dnSpy.Decompiler.Upstream.DebugInfo {
 			if (function.IsAsync)
 				builder.AsyncInfo = GetAsyncInfo(function, bodyMethod, kickoffMethod);
 
-			if (methodSpans.TryGetValue(function.Method, out var span)) {
+			// A method can be decompiled more than once (e.g. a lambda whose compiler generated names were
+			// obfuscated: inline and as a method of its display class), so use the span of this function's node
+			// The fallback is only safe for top-level functions: some lambdas (e.g. a group-by key selector turned into
+			// a query clause) aren't annotated on any node, and their method may also be declared elsewhere.
+			if (spans.ByFunction.TryGetValue(function, out var span) ||
+				(function.Kind == ILFunctionKind.TopLevelFunction && spans.ByMethod.TryGetValue(function.Method, out span))) {
 				builder.StartPosition = span.start;
 				builder.EndPosition = span.end;
 			}
@@ -206,18 +214,30 @@ namespace dnSpy.Decompiler.Upstream.DebugInfo {
 			return uint.MaxValue;
 		}
 
-		static Dictionary<UpstreamMethod, (int start, int end)> GetMethodSpans(SyntaxTree syntaxTree, TrackingTextOutput output) {
-			var dict = new Dictionary<UpstreamMethod, (int, int)>();
+		sealed class Spans {
+			public Dictionary<ILFunction, (int start, int end)> ByFunction { get; } = new Dictionary<ILFunction, (int, int)>();
+			public Dictionary<UpstreamMethod, (int start, int end)> ByMethod { get; } = new Dictionary<UpstreamMethod, (int, int)>();
+		}
+
+		static bool IsFunctionDefinition(AstNode node) =>
+			node is EntityDeclaration || node is LambdaExpression || node is AnonymousMethodExpression || node is LocalFunctionDeclarationStatement ||
+			// Lambdas turned into query clauses (where, select, orderby...) keep their annotations
+			node is QueryClause;
+
+		static Spans GetSpans(SyntaxTree syntaxTree, TrackingTextOutput output) {
+			var spans = new Spans();
 			foreach (var node in syntaxTree.Descendants) {
-				if (node is not EntityDeclaration decl)
+				if (node.StartLocation.IsEmpty || node.EndLocation.IsEmpty)
 					continue;
-				if (decl.GetSymbol() is not UpstreamMethod method)
-					continue;
-				if (decl.StartLocation.IsEmpty || decl.EndLocation.IsEmpty)
-					continue;
-				dict[method] = (output.ToOffset(decl.StartLocation.Line, decl.StartLocation.Column), output.ToOffset(decl.EndLocation.Line, decl.EndLocation.Column));
+				var span = (output.ToOffset(node.StartLocation.Line, node.StartLocation.Column), output.ToOffset(node.EndLocation.Line, node.EndLocation.Column));
+				// Nodes that define a function are annotated with its ILFunction. So are references to local functions
+				// (call sites), which must be ignored.
+				if (IsFunctionDefinition(node) && node.Annotation<ILFunction>() is ILFunction function && !spans.ByFunction.ContainsKey(function))
+					spans.ByFunction.Add(function, span);
+				if (node is EntityDeclaration decl && decl.GetSymbol() is UpstreamMethod method)
+					spans.ByMethod[method] = span;
 			}
-			return dict;
+			return spans;
 		}
 	}
 }
