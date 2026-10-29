@@ -146,16 +146,36 @@ namespace dnSpy.Decompiler.Upstream.Tests.Infrastructure {
 					statementAt[instr.Offset] = statement;
 			}
 
-			// dnSpy binds a breakpoint to the first instruction of each IL span of the statement. If the span can be
-			// entered elsewhere (a branch from outside the span), the breakpoint misses those executions and fires
-			// when only the first part runs (e.g. a 'continue' jump attributed to the next statement).
-			// (A branch from another IL span of the same statement is fine: its breakpoint fired already)
+			// dnSpy binds a breakpoint to the first instruction of the statement's lowest IL span only
+			// (MethodDebugInfo.GetSourceStatementByTextOffset). If the statement can be entered elsewhere from other
+			// code, the breakpoint misses those executions or fires when the statement doesn't run (e.g. a 'continue'
+			// jump attributed to the next statement). (A branch from the statement's own code is fine: its breakpoint
+			// fired already. Not checked: entries from IL without a statement.)
+			var breakpointOf = new Dictionary<TextSpan, uint>();
+			foreach (var statement in info.Statements) {
+				if (!breakpointOf.TryGetValue(statement.TextSpan, out uint bp) || statement.ILSpan.Start < bp)
+					breakpointOf[statement.TextSpan] = statement.ILSpan.Start;
+			}
 			foreach (var (target, source) in entries) {
-				if (!statementAt.TryGetValue(target, out var statement) || target == statement.ILSpan.Start)
+				if (!statementAt.TryGetValue(target, out var statement) || target == breakpointOf[statement.TextSpan])
 					continue;
 				if (source is uint s && ilOwner.TryGetValue(s, out var sourceText) && sourceText == statement.TextSpan)
 					continue;
-				report.Errors.Add($"Statement {statement} can be entered at IL_{target:X4} " + (source is uint from ? $"from IL_{from:X4}" : "(exception handler)") + " without executing its first instruction");
+				// Inside a piece, or at the start of a piece that isn't the statement's first one, from other code
+				if (target != statement.ILSpan.Start || source is not uint src || ilOwner.ContainsKey(src))
+					report.Errors.Add($"Statement {statement} can be entered at IL_{target:X4} " + (source is uint from ? $"from IL_{from:X4}" : "(exception handler)") + $" without executing its breakpoint's instruction IL_{breakpointOf[statement.TextSpan]:X4}");
+			}
+			// The same for a piece that's not the statement's first one and that other code falls into
+			var instrList = body.Instructions;
+			for (int i = 1; i < instrList.Count; i++) {
+				uint offset = instrList[i].Offset;
+				if (!statementAt.TryGetValue(offset, out var statement) || offset != statement.ILSpan.Start || offset == breakpointOf[statement.TextSpan])
+					continue;
+				var prev = instrList[i - 1];
+				if (prev.OpCode.FlowControl is FlowControl.Branch or FlowControl.Return or FlowControl.Throw || prev.OpCode.Code is Code.Endfinally or Code.Endfilter)
+					continue;
+				if (ilOwner.TryGetValue(prev.Offset, out var prevText) && prevText != statement.TextSpan)
+					report.Errors.Add($"Statement {statement} is entered at IL_{offset:X4} from IL_{prev.Offset:X4} (the previous statement) without executing its breakpoint's instruction IL_{breakpointOf[statement.TextSpan]:X4}");
 			}
 
 			// A simple statement (not an if/loop/switch header) only branches within itself or to its end (e.g.
@@ -236,10 +256,18 @@ namespace dnSpy.Decompiler.Upstream.Tests.Infrastructure {
 				if (originalSource is not null) {
 					var lineStarts = GetLineStarts(originalSource);
 					var variableNames = GetVariableNames(info, pdb);
+					// (And the variables the decompiled code declares that aren't IL locals, e.g. values kept on the stack)
+					if (info.HasSpan && info.Span.End <= text.Length) {
+						foreach (System.Text.RegularExpressions.Match m in declaration.Matches(text.Substring(info.Span.Start, info.Span.Length)))
+							variableNames.Add(m.Groups[1].Value);
+					}
 					foreach (var statement in info.Statements) {
 						if (!pdb.SourceLocations.TryGetValue((int)statement.ILSpan.Start, out var loc))
 							continue;
 						var original = Substring(originalSource, lineStarts, loc);
+						// A constructor's declaration is its implicit base constructor call, which isn't in the decompiled code
+						if (info.Method.IsConstructor && original.Contains(info.Method.DeclaringType.Name.String.Split('`')[0] + "(", System.StringComparison.Ordinal))
+							continue;
 						var decompiled = text.Substring(statement.TextSpan.Start, statement.TextSpan.Length);
 						var same = IsSameCode(original, decompiled, variableNames);
 						if (same is null)
@@ -334,6 +362,8 @@ namespace dnSpy.Decompiler.Upstream.Tests.Infrastructure {
 		/// Names of locals and parameters in the original source and in the decompiled code. The decompiler renames
 		/// locals (it doesn't get the PDB), so these names aren't used to compare statements.
 		/// </summary>
+		static readonly System.Text.RegularExpressions.Regex declaration = new System.Text.RegularExpressions.Regex(@"\b(?:var|int|long|bool|string|object|char|double|float|decimal|byte|short|uint|ulong|[A-Z]\w*(?:<[^;=()]*?>)?(?:\[\])?\??)\s+([a-z_]\w*)\s*[=;)]");
+
 		internal static HashSet<string> GetVariableNames(MethodDebugInfo info, PdbMethodInfo pdb) {
 			var names = new HashSet<string>(pdb.LocalNames.Values);
 			foreach (var method in new[] { info.Method, info.KickoffMethod }) {

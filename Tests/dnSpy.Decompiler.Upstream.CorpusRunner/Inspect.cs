@@ -27,12 +27,23 @@ using ICSharpCode.Decompiler.CSharp;
 
 namespace dnSpy.Decompiler.Upstream.CorpusRunner {
 	/// <summary>
-	/// inspect --type FULLNAME [--method NAME] [--engine upstream|legacy] ASSEMBLY
-	/// Prints a method's IL and the debug info statements an engine produced for it
+	/// inspect --type FULLNAME [--method NAME] [--engine upstream|legacy] [--text true] ASSEMBLY
+	/// Prints a method's IL and the debug info statements an engine produced for it (--text: and its decompiled
+	/// code). With the environment variable SHAPER_TRACE set to part of a method's full name, also prints the
+	/// statement shaper's steps for that method.
 	/// </summary>
 	static class Inspect {
 		public static int Run(Options options) {
 			dnSpy.Decompiler.Upstream.DebugInfo.StatementShaper.OnError = (method, ex) => Console.WriteLine($"SHAPER ERROR {method.FullName}: {ex}");
+			if (Environment.GetEnvironmentVariable("SHAPER_TRACE") is string traceFilter) {
+				bool tracing = false;
+				dnSpy.Decompiler.Upstream.DebugInfo.StatementShaper.Trace.Value = line => {
+					if (line.StartsWith("==", StringComparison.Ordinal))
+						tracing = line.Contains(traceFilter, StringComparison.Ordinal);
+					if (tracing)
+						Console.WriteLine(line);
+				};
+			}
 			var module = ModuleDefMD.Load(options.Paths.Single(), AssemblyRunner.CreateModuleContext(options.Paths.Single()));
 			var typeName = options.Get("type");
 			var methodName = options.Get("method", "");
@@ -69,6 +80,8 @@ namespace dnSpy.Decompiler.Upstream.CorpusRunner {
 				}
 				foreach (var e in report.Errors)
 					Console.WriteLine("   ERROR " + e);
+				if (options.Get("text", "") == "true")
+					Console.WriteLine(text.Substring(info.Span.Start, info.Span.Length));
 			}
 			return 0;
 		}

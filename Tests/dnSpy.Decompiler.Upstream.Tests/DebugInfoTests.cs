@@ -38,7 +38,7 @@ namespace dnSpy.Decompiler.Upstream.Tests {
 		public DebugInfoTests(ITestOutputHelper log) => this.log = log;
 
 		public static IEnumerable<object[]> Programs() {
-			foreach (var program in new[] { nameof(TestPrograms.ControlFlow), nameof(TestPrograms.StateMachines) }) {
+			foreach (var program in new[] { nameof(TestPrograms.ControlFlow), nameof(TestPrograms.StateMachines), nameof(TestPrograms.Statements) }) {
 				yield return new object[] { program, false };
 				yield return new object[] { program, true };
 			}
@@ -48,6 +48,7 @@ namespace dnSpy.Decompiler.Upstream.Tests {
 			program switch {
 				nameof(TestPrograms.ControlFlow) => TestPrograms.ControlFlow,
 				nameof(TestPrograms.StateMachines) => TestPrograms.StateMachines,
+				nameof(TestPrograms.Statements) => TestPrograms.Statements,
 				_ => throw new ArgumentException(program),
 			};
 
@@ -163,8 +164,12 @@ namespace dnSpy.Decompiler.Upstream.Tests {
 			// locations 59-90%; upstream's own sequence points alone gave 63-80% and 53-68%)
 			Assert.True(Ratio(upstream.Reports.Sum(r => r.PdbUserCodeInstructionsCovered), upstream.Reports.Sum(r => r.PdbUserCodeInstructions)) >= 0.80, "User code IL coverage dropped below 80%");
 			Assert.True(Ratio(upstream.Reports.Sum(r => r.PdbSequencePointsMatched), upstream.Reports.Sum(r => r.PdbSequencePoints)) >= 0.55, "Breakpoint locations shared with the compiler dropped below 55%");
-			// Every local the compiler named (catch variables included) can be shown and evaluated
-			Assert.Equal(upstream.Reports.Sum(r => r.PdbLocals), upstream.Reports.Sum(r => r.PdbLocalsMapped));
+			// Every local the compiler named (catch variables included) can be shown and evaluated, except the ones the
+			// decompiled code doesn't have: 'var r = k switch { ... }; return r;' is decompiled as 'string result =
+			// k switch { ... }; return result;' where 'result' is the switch's own temporary (upstream inlines 'r')
+			var unmappedLocals = upstream.Reports.SelectMany(r => r.UnmappedPdbLocals.Select(slot => $"{r.Method.Name}:V_{slot}"))
+				.Except(new[] { "SwitchDecl:V_0" }).ToList();
+			Assert.Empty(unmappedLocals);
 			int hoisted = upstream.Reports.Sum(r => r.HoistedLocals);
 			if (hoisted != 0)
 				Assert.True(Ratio(upstream.Reports.Sum(r => r.HoistedLocalsNamed), hoisted) >= 0.5, "Less than half of the hoisted locals are mapped with their name");

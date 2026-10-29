@@ -17,6 +17,7 @@
     along with dnSpy.  If not, see <http://www.gnu.org/licenses/>.
 */
 
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using dnlib.DotNet;
@@ -33,6 +34,9 @@ namespace dnSpy.Decompiler.Upstream.Tests.Infrastructure {
 		public MethodDef Method { get; }
 		readonly List<(uint start, uint end, int statement)> spans = new List<(uint, uint, int)>();
 		readonly List<string> texts = new List<string>();
+		// Source location of each statement (PDB models): a statement nested in another one's (a switch expression's
+		// arm) is part of it
+		readonly List<(int startLine, int startColumn, int endLine, int endColumn)?> locations = new List<(int, int, int, int)?>();
 		readonly Dictionary<string, int> statementIds = new Dictionary<string, int>();
 		public HashSet<uint> Boundaries { get; } = new HashSet<uint>();
 		public List<(uint yieldOffset, uint resumeOffset)> Awaits { get; } = new List<(uint, uint)>();
@@ -47,19 +51,75 @@ namespace dnSpy.Decompiler.Upstream.Tests.Infrastructure {
 
 		/// <param name="key">Identifies the statement (its text span or source location): spans with the same key
 		/// are the same statement</param>
-		public void AddStatement(uint start, uint end, string key, string text) {
+		public void AddStatement(uint start, uint end, string key, string text, (int startLine, int startColumn, int endLine, int endColumn)? location = null) {
 			if (!statementIds.TryGetValue(key, out int id)) {
 				id = texts.Count;
 				texts.Add(text);
+				locations.Add(location);
 				statementIds.Add(key, id);
 			}
 			spans.Add((start, end, id));
+		}
+
+		/// <summary>
+		/// The outermost statement whose source location contains the statement's (itself if none)
+		/// </summary>
+		public int Outermost(int statement) {
+			if (locations[statement] is not var (sl, sc, el, ec))
+				return statement;
+			int best = statement;
+			long bestSize = long.MaxValue;
+			for (int i = 0; i < locations.Count; i++) {
+				if (locations[i] is not var (l1, c1, l2, c2))
+					continue;
+				bool contains = (l1, c1).CompareTo((sl, sc)) <= 0 && (el, ec).CompareTo((l2, c2)) <= 0;
+				long size = (long)(l2 - l1) * 100000 + (c2 - c1);
+				if (contains && i != statement && (best == statement || size > bestSize || bestSize == long.MaxValue)) {
+					best = i;
+					bestSize = size;
+				}
+			}
+			return best;
 		}
 
 		public int StatementCount => texts.Count;
 		public string GetText(int statement) => texts[statement];
 		public IEnumerable<uint> GetStarts(int statement) => spans.Where(a => a.statement == statement).Select(a => a.start);
 		public IEnumerable<(uint start, uint end)> GetSpans(int statement) => spans.Where(a => a.statement == statement).Select(a => (a.start, a.end));
+
+		/// <summary>
+		/// Where dnSpy's breakpoint on the statement is, or null if it can't be bound. dnSpy binds it to the first
+		/// instruction of the statement's lowest IL span (MethodDebugInfo.GetSourceStatementByTextOffset: one statement
+		/// per method, the first one in IL order). The runtime only binds a breakpoint at a JIT boundary
+		/// (DebuggerController::BindPatch skips inexact IL offsets, except offset 0).
+		/// </summary>
+		public uint? BreakpointOffset(int statement) {
+			if (breakpoints.TryGetValue(statement, out uint? offset))
+				return offset;
+			uint start = GetStarts(statement).Min();
+			offset = start == 0 || Boundaries.Contains(start) ? start : null;
+			breakpoints.Add(statement, offset);
+			return offset;
+		}
+		readonly Dictionary<int, uint?> breakpoints = new Dictionary<int, uint?>();
+
+		/// <summary>
+		/// The statements whose breakpoint fires when the instruction at <paramref name="offset"/> runs
+		/// </summary>
+		public IEnumerable<int> BreakpointsAt(uint offset) {
+			breakpointsAt ??= Enumerable.Range(0, StatementCount).Where(s => BreakpointOffset(s) is not null).GroupBy(s => BreakpointOffset(s)!.Value).ToDictionary(g => g.Key, g => g.ToArray());
+			return breakpointsAt.TryGetValue(offset, out var statements) ? statements : Array.Empty<int>();
+		}
+		Dictionary<uint, int[]>? breakpointsAt;
+
+		public IEnumerable<uint> GetInstructionOffsets(int statement) {
+			foreach (var (start, end) in GetSpans(statement)) {
+				foreach (var offset in instructions.Keys) {
+					if (start <= offset && offset < end)
+						yield return offset;
+				}
+			}
+		}
 
 		public int? StatementAt(uint offset) {
 			foreach (var (start, end, statement) in spans) {
@@ -88,17 +148,38 @@ namespace dnSpy.Decompiler.Upstream.Tests.Infrastructure {
 		}
 
 		/// <summary>
-		/// The JIT's default boundaries (no PDB): where the evaluation stack is empty, nops, and the method start
+		/// The JIT's implicit boundaries for debuggable code (ICorDebugInfo.DEFAULT_BOUNDARIES, see the importer's
+		/// impImportBlockCode): where the evaluation stack is empty, after a call (call, callvirt, calli, jmp, newobj,
+		/// newarr: the JIT spills the stack there) and after a nop, plus the method start and the start of each
+		/// handler and filter (the importer sets one for a block with a catch type, which all of them have, though
+		/// a catch handler starts with the exception on the stack). The debugger can stop at each one (they're all
+		/// IL-to-native map entries).
 		/// </summary>
 		public void AddDefaultBoundaries() {
 			Boundaries.Add(0);
+			foreach (var eh in Method.Body.ExceptionHandlers) {
+				if (eh.HandlerStart is not null)
+					Boundaries.Add(eh.HandlerStart.Offset);
+				if (eh.FilterStart is not null)
+					Boundaries.Add(eh.FilterStart.Offset);
+			}
 			foreach (var (offset, depth) in StackDepthCalculator.Calculate(Method)) {
 				if (depth == 0)
 					Boundaries.Add(offset);
 			}
-			foreach (var instr in Method.Body.Instructions) {
-				if (instr.OpCode.Code == Code.Nop)
-					Boundaries.Add(instr.Offset);
+			var instrs = Method.Body.Instructions;
+			for (int i = 0; i + 1 < instrs.Count; i++) {
+				switch (instrs[i].OpCode.Code) {
+				case Code.Call:
+				case Code.Callvirt:
+				case Code.Calli:
+				case Code.Jmp:
+				case Code.Newobj:
+				case Code.Newarr:
+				case Code.Nop:
+					Boundaries.Add(instrs[i + 1].Offset);
+					break;
+				}
 			}
 		}
 
@@ -122,7 +203,8 @@ namespace dnSpy.Decompiler.Upstream.Tests.Infrastructure {
 			var points = pdb.SequencePointOffsets.Select(o => (offset: o, hidden: false))
 				.Concat(pdb.HiddenSequencePointOffsets.Select(o => (offset: o, hidden: true))).OrderBy(p => p.offset).ToList();
 			for (int i = 0; i < points.Count; i++) {
-				// With a PDB the JIT can stop at each sequence point
+				// The runtime gives the JIT the sequence points as explicit boundaries if it can read the PDB
+				// (Debugger::getBoundaries), in addition to the implicit ones
 				model.Boundaries.Add((uint)points[i].offset);
 				if (points[i].hidden)
 					continue;
@@ -131,9 +213,9 @@ namespace dnSpy.Decompiler.Upstream.Tests.Infrastructure {
 				if (end <= start)
 					continue;
 				var loc = pdb.SourceLocations[points[i].offset];
-				model.AddStatement(start, end, loc.ToString(), GetSourceText(sourceLines, loc));
+				model.AddStatement(start, end, loc.ToString(), GetSourceText(sourceLines, loc), loc);
 			}
-			model.Boundaries.Add(0);
+			model.AddDefaultBoundaries();
 			foreach (var (yieldOffset, resumeOffset) in pdb.Awaits)
 				model.Awaits.Add(((uint)yieldOffset, (uint)resumeOffset));
 			return model;
@@ -178,6 +260,11 @@ namespace dnSpy.Decompiler.Upstream.Tests.Infrastructure {
 		/// </summary>
 		public int AwaitsFollowed { get; private set; }
 
+		/// <summary>
+		/// The awaits (method token, yield offset) that a step over continued after
+		/// </summary>
+		public HashSet<(uint token, uint yieldOffset)> FollowedAwaits { get; } = new HashSet<(uint, uint)>();
+
 		public StepSimulator(List<TraceEvent> events, List<TraceFrame> frames, Dictionary<uint, StepModel> models) {
 			this.events = events;
 			this.frames = frames;
@@ -208,6 +295,7 @@ namespace dnSpy.Decompiler.Upstream.Tests.Infrastructure {
 							return stops;
 						continuationFrames.Add(resumed.Value.frame);
 						AwaitsFollowed++;
+						FollowedAwaits.Add((frame.Token, ev.Offset));
 						frame = resumed.Value.frame;
 						// Stopped at the resume breakpoint (hidden code): step over hidden code to the next statement
 						next = FirstStop(model, frame, resumed.Value.position, currentStatement: null);

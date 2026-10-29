@@ -143,17 +143,54 @@ namespace dnSpy.Decompiler.Upstream.DebugInfo {
 		/// A catch variable has no IL local upstream (the exception is on the stack when the handler starts), but the
 		/// compiler stores it in one, which upstream removed: the debugger reads its value from that local.
 		/// </summary>
-		static Local? GetExceptionLocal(ILVariable variable, CilBody body) {
-			var handler = variable.Function?.Descendants.OfType<TryCatchHandler>().FirstOrDefault(h => h.Variable == variable);
-			if (handler is null)
-				return null;
+		Local? GetExceptionLocal(ILVariable variable, CilBody body) {
+			if (exceptionLocals.TryGetValue(variable, out var cached))
+				return cached;
+			var local = FindExceptionLocal(variable, body);
+			exceptionLocals[variable] = local;
+			return local;
+		}
+		readonly Dictionary<ILVariable, Local?> exceptionLocals = new Dictionary<ILVariable, Local?>();
+
+		/// <summary>
+		/// Catch handlers (by their variable) and the instruction offsets of a function's body, computed once (a method
+		/// can have hundreds of catch blocks)
+		/// </summary>
+		sealed class HandlerInfo {
+			public readonly Dictionary<ILVariable, TryCatchHandler> Handlers = new Dictionary<ILVariable, TryCatchHandler>();
+			public uint[] Offsets = Array.Empty<uint>();
+			public readonly Dictionary<Instruction, int> IndexOf = new Dictionary<Instruction, int>();
+		}
+		readonly Dictionary<(ILFunction, CilBody), HandlerInfo> handlerInfos = new Dictionary<(ILFunction, CilBody), HandlerInfo>();
+
+		HandlerInfo GetHandlerInfo(ILFunction function, CilBody body) {
+			if (handlerInfos.TryGetValue((function, body), out var info))
+				return info;
+			info = new HandlerInfo();
+			foreach (var h in function.Descendants.OfType<TryCatchHandler>()) {
+				if (!info.Handlers.ContainsKey(h.Variable))
+					info.Handlers.Add(h.Variable, h);
+			}
 			var instrs = body.Instructions;
-			var offsets = new uint[instrs.Count];
+			info.Offsets = new uint[instrs.Count];
 			uint offset = 0;
 			for (int i = 0; i < instrs.Count; i++) {
-				offsets[i] = offset;
+				info.Offsets[i] = offset;
+				info.IndexOf[instrs[i]] = i;
 				offset += (uint)instrs[i].GetSize();
 			}
+			handlerInfos.Add((function, body), info);
+			return info;
+		}
+
+		Local? FindExceptionLocal(ILVariable variable, CilBody body) {
+			if (variable.Function is not ILFunction function)
+				return null;
+			var info = GetHandlerInfo(function, body);
+			if (!info.Handlers.TryGetValue(variable, out var handler))
+				return null;
+			var instrs = body.Instructions;
+			var offsets = info.Offsets;
 			// catch (T ex): the store at the start of the handler
 			var range = handler.ExceptionSpecifierILRange;
 			if (!range.IsEmpty) {
@@ -169,7 +206,7 @@ namespace dnSpy.Decompiler.Upstream.DebugInfo {
 				if (instr is not null && instr.StartILOffset >= 0)
 					starts.Add((uint)instr.StartILOffset);
 			}
-			int IndexOf(Instruction? instr) => instr is null ? -1 : instrs.IndexOf(instr);
+			int IndexOf(Instruction? instr) => instr is not null && info.IndexOf.TryGetValue(instr, out int index) ? index : -1;
 			var eh = body.ExceptionHandlers.FirstOrDefault(a =>
 				(IndexOf(a.FilterStart) is int f && f >= 0 && starts.Contains(offsets[f])) ||
 				(IndexOf(a.HandlerStart) is int h && h >= 0 && starts.Contains(offsets[h])));
@@ -178,8 +215,9 @@ namespace dnSpy.Decompiler.Upstream.DebugInfo {
 			int handlerStart = IndexOf(eh.HandlerStart);
 			if (handlerStart < 0)
 				return null;
-			var typeName = variable.Type.ReflectionName;
-			bool IsExceptionStore(int i) => instrs[i].IsStloc() && instrs[i].GetLocal(body.Variables) is Local local && local.Type?.ReflectionFullName == typeName;
+			// (Generic exception types: compare the type definitions, dnlib qualifies generic arguments with assemblies)
+			var typeName = variable.Type.GetDefinition()?.ReflectionName ?? variable.Type.ReflectionName;
+			bool IsExceptionStore(int i) => instrs[i].IsStloc() && instrs[i].GetLocal(body.Variables) is Local local && GetDefinitionName(local.Type) == typeName;
 			// catch (T ex) when (...): the filter stores it after the type check (isinst T; dup; brtrue L; ...; L: stloc)
 			int filterStart = IndexOf(eh.FilterStart);
 			if (eh.HandlerType == ExceptionHandlerType.Filter && filterStart >= 0) {
@@ -191,6 +229,13 @@ namespace dnSpy.Decompiler.Upstream.DebugInfo {
 			}
 			// catch (T ex): stored by the handler's first instruction
 			return eh.HandlerType == ExceptionHandlerType.Catch && IsExceptionStore(handlerStart) ? instrs[handlerStart].GetLocal(body.Variables) : null;
+		}
+
+		static string? GetDefinitionName(TypeSig? type) {
+			type = type?.RemovePinnedAndModifiers();
+			if (type is GenericInstSig genericInst)
+				return genericInst.GenericType?.TypeDefOrRef?.ReflectionFullName;
+			return type?.ToTypeDefOrRef()?.ReflectionFullName;
 		}
 
 		static bool IsILLocal(VariableKind kind) =>

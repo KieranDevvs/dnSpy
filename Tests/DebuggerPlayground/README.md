@@ -36,6 +36,12 @@ Linux, so this checklist is about what only the real debugger can show: the UI, 
 Also worth a look while stopped: the Locals window shouldn't list temporaries like `V_3` that aren't in the code,
 and switching the language to the legacy C# and back while stopped should keep the current statement highlighted.
 
-Known differences from a compiler PDB (the automated tests measure them): an implicit base constructor call and,
-in `Conditional`, one arm of the merged conditional have no statement, so a frame stopped in those calls shows
-no current statement.
+Known differences from a compiler PDB (the automated tests measure them):
+
+- Some calls have no statement, so a frame stopped in them shows no current statement: the base constructor call
+  of a constructor that only initializes fields (`Scenarios` has none in the decompiled code, its `Name = ""`
+  initializer is on the property) and, in `Conditional`, one arm of the conditional expression that the decompiler
+  made of the else-if.
+- In optimized code the decompiler can show a value that the IL keeps on the evaluation stack as a variable, e.g.
+  `func` in `Captured`. A breakpoint on such a statement never hits: the JIT has no place to stop there (the
+  compiler's own PDB has one statement for all of that code).
