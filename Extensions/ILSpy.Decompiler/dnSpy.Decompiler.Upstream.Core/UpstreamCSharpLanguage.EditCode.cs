@@ -25,6 +25,7 @@ using System.Reflection.Metadata.Ecma335;
 using System.Threading;
 using dnlib.DotNet;
 using dnSpy.Contracts.Decompiler;
+using dnSpy.Contracts.Text;
 using dnSpy.Decompiler.Upstream.Bridge;
 using ICSharpCode.Decompiler;
 using ICSharpCode.Decompiler.CSharp;
@@ -90,6 +91,7 @@ namespace dnSpy.Decompiler.Upstream {
 						decompiler.AstTransforms.Add(new EditCodeTransform(selection, cache, bridged, info.DecompileHidden, withoutUnusedBodies ? unused : null));
 					}
 				},
+				writeHeader: UsesNullableMetadata(type) ? WriteNullableAnnotationsDirective : null,
 				createImage: unused is null || unused.Methods.Count == 0 ? null : bridged => {
 					var image = ImageWithoutMethodBodies.TryCreate(cache, bridged, unused.Methods, EditUnusedBodiesMinSize);
 					if (image is not null) {
@@ -190,10 +192,65 @@ namespace dnSpy.Decompiler.Upstream {
 		}
 
 		/// <summary>
-		/// The code is compiled: no settings that make code that doesn't compile
+		/// The code is compiled: no settings that make code that doesn't compile. The nullable annotations are shown so
+		/// the compiler can recreate the nullable metadata (see <see cref="WriteNullableAnnotationsDirective"/>).
 		/// </summary>
 		static void ConfigureEditSettings(DecompilerSettings settings) {
 			settings.DecompileMemberBodies = true;
+			settings.NullableReferenceTypes = true;
+		}
+
+		/// <summary>
+		/// dnSpy compiles edited code without a nullable context, so the compiler wouldn't emit the nullable metadata
+		/// ([NullableContext], [Nullable]) of the code it compiles. In the nullable annotations context it recreates it
+		/// from the decompiled annotations ('string?'), without nullable warnings. (dnSpy keeps the original metadata
+		/// where it can, see ModuleImporter.)
+		/// </summary>
+		static void WriteNullableAnnotationsDirective(IDecompilerOutput output) {
+			output.Write("#nullable", BoxedTextColor.PreprocessorKeyword);
+			output.Write(" ", BoxedTextColor.Text);
+			output.Write("enable annotations", BoxedTextColor.PreprocessorText);
+			output.WriteLine();
+		}
+
+		/// <summary>
+		/// Does the type (or a nested type or member) have nullable metadata?
+		/// </summary>
+		static bool UsesNullableMetadata(TypeDef type) {
+			foreach (var t in type.GetTypes().Prepend(type)) {
+				if (HasNullableMetadata(t))
+					return true;
+				foreach (var m in t.Methods) {
+					if (HasNullableMetadata(m))
+						return true;
+					foreach (var p in m.ParamDefs) {
+						if (HasNullableMetadata(p))
+							return true;
+					}
+				}
+				foreach (var f in t.Fields) {
+					if (HasNullableMetadata(f))
+						return true;
+				}
+				foreach (var p in t.Properties) {
+					if (HasNullableMetadata(p))
+						return true;
+				}
+				foreach (var e in t.Events) {
+					if (HasNullableMetadata(e))
+						return true;
+				}
+			}
+			return false;
+		}
+
+		static bool HasNullableMetadata(IHasCustomAttribute member) {
+			foreach (var ca in member.CustomAttributes) {
+				var name = ca.TypeFullName;
+				if (name == "System.Runtime.CompilerServices.NullableAttribute" || name == "System.Runtime.CompilerServices.NullableContextAttribute")
+					return true;
+			}
+			return false;
 		}
 
 		/// <summary>

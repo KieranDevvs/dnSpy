@@ -118,9 +118,7 @@ namespace dnSpy.Decompiler.Upstream.Tests {
 							var decompiler = engine == "legacy" ? LegacyDecompiler.CSharp : LanguageRunner.Create();
 							if (progress is not null)
 								File.AppendAllText(progress, $"{engine} {kind} {Path.GetFileName(file)} 0x{token:X8}{Environment.NewLine}");
-							var editWatch = System.Diagnostics.Stopwatch.StartNew();
-							var (category, errors, example) = Edit(decompiler, kind, file, token);
-							double editSeconds = editWatch.Elapsed.TotalSeconds;
+							var (category, errors, example, editSeconds) = Edit(decompiler, kind, file, token);
 							stats.Add(category, errors, example, editSeconds);
 							totals[engine].Add(category, errors, example, editSeconds);
 						}
@@ -146,7 +144,16 @@ namespace dnSpy.Decompiler.Upstream.Tests {
 				log.WriteLine("  " + e);
 		}
 
-		static (string category, IEnumerable<string> errors, string example) Edit(IDecompiler decompiler, EditKind kind, string file, uint token) {
+		/// <summary>
+		/// Edits a member, returns the result and the time it took (decompile, compile, import, save; not the checks)
+		/// </summary>
+		static (string category, IEnumerable<string> errors, string example, double seconds) Edit(IDecompiler decompiler, EditKind kind, string file, uint token) {
+			var editWatch = System.Diagnostics.Stopwatch.StartNew();
+			var (category, errors, example) = Edit(decompiler, kind, file, token, editWatch);
+			return (category, errors, example, editWatch.Elapsed.TotalSeconds);
+		}
+
+		static (string category, IEnumerable<string> errors, string example) Edit(IDecompiler decompiler, EditKind kind, string file, uint token, System.Diagnostics.Stopwatch editWatch) {
 			var module = Load(file);
 			try {
 				var member = (IMemberDef)module.ResolveToken(token);
@@ -169,12 +176,21 @@ namespace dnSpy.Decompiler.Upstream.Tests {
 						return ("compile", result.CompileErrors.Select(a => a.Id), result.Describe(3));
 					return ("import", result.ImportErrors.Select(a => a.Split(' ')[0]), result.Describe(3));
 				}
+				var image = new MemoryStream();
 				try {
-					module.Write(new MemoryStream());
+					module.Write(image);
 				}
 				catch (Exception ex) {
 					return ("write", new[] { "write" }, $"{kind} {result.Target}: {ex.Message}");
 				}
+				editWatch.Stop();
+				// The edited type keeps its nullable annotations
+				var topLevelType = member is TypeDef type ? type : member.DeclaringType;
+				while (topLevelType.DeclaringType is not null)
+					topLevelType = topLevelType.DeclaringType;
+				var differences = NullabilityOracle.Compare(File.ReadAllBytes(file), image.ToArray(), topLevelType.FullName);
+				if (differences.Count != 0)
+					return ("nullability", new[] { "nullability" }, $"{kind} {result.Target}: " + string.Join(" | ", differences.Take(3)));
 				return ("ok", Array.Empty<string>(), "");
 			}
 			catch (Exception ex) {

@@ -65,6 +65,11 @@ namespace dnSpy.Decompiler.Upstream.Tests.Infrastructure {
 				.Select(a => (MetadataReference)MetadataReference.CreateFromFile(a)).ToArray();
 		});
 
+		/// <summary>
+		/// The framework assemblies the test programs are compiled against
+		/// </summary>
+		public static IEnumerable<MetadataReference> References => references.Value;
+
 		public static CompiledProgram Compile(string name, string source, bool optimize = false, LanguageVersion languageVersion = LanguageVersion.Preview, CompiledProgram[]? references = null) {
 			var tree = CSharpSyntaxTree.ParseText(SourceText.From(source, Encoding.UTF8), new CSharpParseOptions(languageVersion), path: name + ".cs");
 			var allReferences = TestCompiler.references.Value.Concat((references ?? Array.Empty<CompiledProgram>()).Select(a => MetadataReference.CreateFromImage(a.Image)));

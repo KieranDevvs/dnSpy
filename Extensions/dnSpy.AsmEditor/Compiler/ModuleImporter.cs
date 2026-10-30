@@ -250,6 +250,7 @@ namespace dnSpy.AsmEditor.Compiler {
 			InitializeTypesMethods(oldTypeToNewType.Values.OfType<NewImportedType>());
 			InitializeTypesMethods(oldTypeToNewType.Values.OfType<MergedImportedType>());
 
+			FixNullableMetadata();
 			UpdateEditedMethods();
 			foreach (var kv in editedFieldsToFix) {
 				var importedType = (MergedImportedType)oldTypeToNewType[kv.Key.DeclaringType];

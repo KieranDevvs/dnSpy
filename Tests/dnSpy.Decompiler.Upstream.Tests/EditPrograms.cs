@@ -482,12 +482,44 @@ namespace dnSpy.Decompiler.Upstream.Tests {
 					}
 				}
 
+				// Nullable metadata: oblivious code (#nullable disable) next to annotated code
+			#nullable disable
+				public class LegacyNames {
+					public string Name = "legacy";
+					public string Echo(string s) => s + Name;
+					public System.Collections.Generic.List<string> Items { get; } = new System.Collections.Generic.List<string>();
+				}
+			#nullable restore
+
+				public class Mixed {
+					public string? Maybe(string s) => s.Length > 3 ? s : null;
+			#nullable disable
+					public string Oblivious(string s) => s;
+			#nullable restore
+					public System.Collections.Generic.Dictionary<string, string?> Map { get; } = new();
+				}
+
+				// Oblivious base types, interfaces and generic parameters in an annotated type
+			#nullable disable
+				public class MixedBase<T> : System.Collections.Generic.List<string>, System.IComparable<string>
+			#nullable restore
+				{
+					public string? First => Count == 0 ? null : this[0];
+					public int CompareTo(string? other) => Count;
+			#nullable disable
+					public T Pick<U>(T t, U u) where U : System.Collections.Generic.IList<string> => t;
+			#nullable restore
+					public U? Find<U>(U? u) where U : class => u;
+				}
+
 				public static class Program {
 					public static string Run() {
 						var settings = new Settings { Name = "n" };
 						return (Text.TryGet("x", out var v) ? v : "") + Text.FromEnd("abc", 1) + settings.Name + Text.CallsPreview() +
 							typeof(Settings).GetCustomAttributes(typeof(GeneratedMarkerAttribute), false).Length +
-							typeof(Text).GetMethod("CallsPreview")!.GetCustomAttributes(typeof(GeneratedMarkerAttribute), false).Length;
+							typeof(Text).GetMethod("CallsPreview")!.GetCustomAttributes(typeof(GeneratedMarkerAttribute), false).Length +
+							new LegacyNames().Echo("x") + new Mixed().Maybe("abcd") + new Mixed().Oblivious("o") + new Mixed().Map.Count +
+							new MixedBase<int> { "m" }.First + new MixedBase<int>().Pick(1, new string[0]) + new MixedBase<int>().Find("f");
 					}
 				}
 			}

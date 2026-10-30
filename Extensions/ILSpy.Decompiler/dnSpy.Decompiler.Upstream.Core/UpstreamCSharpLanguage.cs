@@ -235,10 +235,11 @@ namespace dnSpy.Decompiler.Upstream {
 		/// <param name="configure">Changes the settings or the decompiler for this decompilation</param>
 		/// <param name="createImage">Creates another image of the module to decompile (same tokens), or returns null to
 		/// use the module's image</param>
+		/// <param name="writeHeader">Writes text before the code</param>
 		void Decompile(ModuleDef module, IEnumerable<MethodDef> methods, IDecompilerOutput output, DecompilationContext ctx,
 			Func<UpstreamCSharpDecompilerEngine, EntityHandle, SyntaxTree> decompile, IMemberDef? definition, bool cacheTypeSystem = true,
 			Action<DecompilerSettings>? configureSettings = null, Action<UpstreamCSharpDecompilerEngine, BridgedModule>? configure = null,
-			Func<BridgedModule, BridgedModule?>? createImage = null) {
+			Func<BridgedModule, BridgedModule?>? createImage = null, Action<IDecompilerOutput>? writeHeader = null) {
 			CheckModified(module, methods, ctx);
 			// The version first: if the settings change now, the debug info gets the old version and is recreated
 			int settingsVersion = langSettings.Version;
@@ -283,6 +284,7 @@ namespace dnSpy.Decompiler.Upstream {
 					decompiler.AstTransforms.Add(new TokenCommentTransform(cache));
 				configure?.Invoke(decompiler, bridged);
 				var syntaxTree = decompile(decompiler, handle);
+				writeHeader?.Invoke(output);
 				WriteCode(syntaxTree, decompiler, settings, settingsVersion, module, output);
 			});
 		}

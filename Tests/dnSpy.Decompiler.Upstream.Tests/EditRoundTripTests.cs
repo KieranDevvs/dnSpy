@@ -132,6 +132,10 @@ namespace dnSpy.Decompiler.Upstream.Tests {
 			}
 			if (check?.Invoke(module) is string problem)
 				return new Outcome { Category = "check", Description = $"{kind} {result.Target}: {problem}", Result = result };
+			// The members keep their nullable annotations ([NullableContext], [Nullable]). (The legacy engine doesn't show
+			// them: the importer keeps the original ones of the members whose signatures didn't change.)
+			if (NullabilityOracle.Compare(compiled.Image, image) is { Count: > 0 } nullability)
+				return new Outcome { Category = "nullability", Description = $"{kind} {result.Target}: " + string.Join(" | ", nullability.Take(3)), Result = result };
 			// The edit dialog puts the caret on the edited member
 			if ((kind == EditKind.EditMethod || kind == EditKind.EditClass) && result.Documents[0].Caret is null && !HasNoDefinition(member, result.Documents[0].Text))
 				return new Outcome { Category = "caret", Description = $"{kind} {result.Target}: the edited member isn't in the main document", Result = result };
