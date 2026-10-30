@@ -50,7 +50,12 @@ namespace dnSpy.Decompiler.Upstream {
 		public UpstreamDecompilerProvider() { }
 
 		public IEnumerable<IDecompiler> Create() {
-			yield return new UpstreamCSharpLanguage(new UpstreamDecompilerSettings());
+			var csharp = new UpstreamCSharpLanguage(new UpstreamDecompilerSettings());
+			yield return csharp;
+#if DEBUG
+			foreach (var ilast in ILAst.UpstreamILAstLanguage.Create(csharp))
+				yield return ilast;
+#endif
 		}
 	}
 
@@ -68,6 +73,11 @@ namespace dnSpy.Decompiler.Upstream {
 		readonly MemberVisibility memberVisibility = new MemberVisibility();
 		readonly TypeSystemCache typeSystems;
 
+		// The ILAst views (debug builds) share the images and type systems
+		internal ModuleBridgeCache Cache => cache;
+		internal TypeSystemCache TypeSystems => typeSystems;
+		internal UpstreamDecompilerSettings LanguageSettings => langSettings;
+
 		/// <summary>
 		/// XML documentation (tests replace it)
 		/// </summary>
@@ -79,7 +89,7 @@ namespace dnSpy.Decompiler.Upstream {
 		/// <param name="onBridging">Tests: called when a module is about to be bridged</param>
 		internal UpstreamCSharpLanguage(UpstreamDecompilerSettings langSettings, Action<ModuleDef>? onBridging) {
 			this.langSettings = langSettings ?? throw new ArgumentNullException(nameof(langSettings));
-			editTracker = new ModuleEditTracker();
+			editTracker = ModuleEditTracker.Shared;
 			cache = new ModuleBridgeCache(new ModuleBridgeOptions(), module => {
 				bool modified = editTracker.IsModified(module);
 				onBridging?.Invoke(module);
@@ -115,35 +125,45 @@ namespace dnSpy.Decompiler.Upstream {
 		/// Call it when modules have been edited (or saved): they're decompiled from an image written by dnlib from now on
 		/// </summary>
 		public void OnModulesModified(IEnumerable<ModuleDef> modules) {
-			foreach (var module in modules) {
+			var list = modules.ToList();
+			foreach (var module in list) {
 				editTracker.MarkModified(module);
 				cache.Invalidate(module);
 			}
+			UpstreamILAst.OnModulesModified(list);
 		}
 
 		/// <summary>
 		/// Call it when assemblies have been added: references that couldn't be resolved may now resolve
 		/// </summary>
-		public void OnModulesAdded() => cache.OnAssembliesAdded();
+		public void OnModulesAdded() {
+			cache.OnAssembliesAdded();
+			UpstreamILAst.OnModulesAdded();
+		}
 
 		/// <summary>
 		/// Call it when assemblies have been removed (frees their images)
 		/// </summary>
 		public void OnModulesRemoved(IEnumerable<ModuleDef> modules) {
-			foreach (var module in modules)
+			var list = modules.ToList();
+			foreach (var module in list)
 				cache.Invalidate(module);
+			UpstreamILAst.OnModulesRemoved(list);
 		}
 
 		/// <summary>
 		/// Call it when all assemblies were removed or reloaded (frees all images)
 		/// </summary>
-		public void OnAllModulesRemoved() => cache.InvalidateAll();
+		public void OnAllModulesRemoved() {
+			cache.InvalidateAll();
+			UpstreamILAst.OnAllModulesRemoved();
+		}
 
 		/// <summary>
 		/// Method bodies edited with the IL editor or the C# compiler are marked in the context (it's set before the
 		/// modified document event), so check them too
 		/// </summary>
-		void CheckModified(ModuleDef module, IEnumerable<MethodDef> methods, DecompilationContext ctx) {
+		internal void CheckModified(ModuleDef module, IEnumerable<MethodDef> methods, DecompilationContext ctx) {
 			if (editTracker.IsModified(module))
 				return;
 			foreach (var method in methods) {
@@ -177,8 +197,20 @@ namespace dnSpy.Decompiler.Upstream {
 		}
 		#endregion
 
+		// In its namespace (like ILSpy and dnSpy's other C# decompiler): Export to Project saves this code to a file
 		public override void Decompile(TypeDef type, IDecompilerOutput output, DecompilationContext ctx) =>
-			Decompile(type.Module, GetMethods(type), output, ctx, (decompiler, handle) => decompiler.Decompile(handle), type);
+			Decompile(type.Module, GetMethods(type), output, ctx, DecompileTypeInNamespace, type);
+
+		SyntaxTree DecompileTypeInNamespace(UpstreamCSharpDecompilerEngine decompiler, EntityHandle handle) {
+			// Upstream doesn't decompile hidden types (compiler-generated types, which the tree shows if the user wants
+			// them) and an empty <Module> this way
+			var typeHandle = (TypeDefinitionHandle)handle;
+			var module = decompiler.TypeSystem.MainModule;
+			var type = module.GetDefinition(typeHandle);
+			if ((type.Name == "<Module>" && type.Members.Count == 0) || UpstreamCSharpDecompilerEngine.MemberIsHidden(module.MetadataFile, handle, langSettings.Settings))
+				return decompiler.Decompile(handle);
+			return decompiler.DecompileTypes(new[] { typeHandle });
+		}
 
 		public override void Decompile(MethodDef method, IDecompilerOutput output, DecompilationContext ctx) {
 			WriteCommentLineDeclaringType(output, method);
@@ -277,9 +309,13 @@ namespace dnSpy.Decompiler.Upstream {
 				if (settings.UseDebugSymbols)
 					decompiler.DebugInfoProvider = DnlibDebugInfoProvider.TryCreate(bridged);
 				// (Before the using declarations are added: it references a type)
+				int initializers = decompiler.AstTransforms.IndexOf(decompiler.AstTransforms.OfType<TransformFieldAndConstructorInitializers>().FirstOrDefault()!);
+				if (initializers >= 0)
+					decompiler.AstTransforms.Insert(initializers + 1, new Transforms.ConstructorParameterInitializerTransform());
 				int usings = decompiler.AstTransforms.IndexOf(decompiler.AstTransforms.OfType<IntroduceUsingDeclarations>().FirstOrDefault()!);
 				decompiler.AstTransforms.Insert(usings < 0 ? decompiler.AstTransforms.Count : usings, new Transforms.CompilerHelperCallTransform());
 				decompiler.AstTransforms.Insert(usings < 0 ? decompiler.AstTransforms.Count : usings + 1, new Transforms.CompoundAssignmentOperatorTransform());
+				decompiler.AstTransforms.Insert(usings < 0 ? decompiler.AstTransforms.Count : usings + 2, new Transforms.CompoundAssignmentOperatorDeclarationTransform());
 				if (showTokens)
 					decompiler.AstTransforms.Add(new TokenCommentTransform(cache));
 				configure?.Invoke(decompiler, bridged);
@@ -295,7 +331,7 @@ namespace dnSpy.Decompiler.Upstream {
 			var variables = new SourceVariableTable(cache, references.TypeSigConverter);
 			var textOutput = new DnSpyTextOutput(output, references, variables);
 			var tokenWriter = TokenWriter.InsertRequiredSpaces(TokenWriter.WrapInWriterThatSetsLocationsInAST(new DnSpyTokenWriter(textOutput, settings, decompiler.TypeSystem)));
-			syntaxTree.AcceptVisitor(new CSharpOutputVisitor(tokenWriter, settings.CSharpFormattingOptions));
+			syntaxTree.AcceptVisitor(new DnSpyOutputVisitor(tokenWriter, settings.CSharpFormattingOptions));
 
 			// Debug info is custom data (the debugger and the text view use it, dnSpy.Console doesn't)
 			if (output.UsesCustomData) {

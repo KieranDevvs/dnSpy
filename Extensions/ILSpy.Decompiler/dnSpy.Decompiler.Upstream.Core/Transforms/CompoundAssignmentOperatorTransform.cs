@@ -78,7 +78,7 @@ namespace dnSpy.Decompiler.Upstream.Transforms {
 		}
 
 		// (11.2 doesn't know these operator names, so the method isn't an operator in its type system)
-		static bool IsSpecialName(IMethod method) {
+		internal static bool IsSpecialName(IMethod method) {
 			var definition = method.MemberDefinition as IMethod ?? method;
 			if (definition.ParentModule?.MetadataFile is not MetadataFile file || definition.MetadataToken.Kind != HandleKind.MethodDefinition)
 				return false;

@@ -28,6 +28,8 @@ using dnSpy.Contracts.Documents.Tabs;
 using dnSpy.Contracts.Documents.TreeView;
 using dnSpy.Contracts.Extension;
 using dnSpy.Contracts.Settings;
+using dnSpy.Decompiler.ILSpy.Core.Mixed;
+using dnSpy.Decompiler.ILSpy.Core.Settings;
 using dnSpy.Decompiler.Upstream.Settings;
 
 namespace dnSpy.Decompiler.Upstream {
@@ -43,6 +45,12 @@ namespace dnSpy.Decompiler.Upstream {
 
 		public UpstreamDecompilerSettings Settings { get; }
 		public UpstreamCSharpLanguage Language { get; }
+#if DEBUG
+		/// <summary>
+		/// The ILAst views (debug builds)
+		/// </summary>
+		public IReadOnlyList<ILAst.UpstreamILAstLanguage> ILAstLanguages { get; }
+#endif
 
 		[ImportingConstructor]
 		UpstreamLanguageService(ISettingsService settingsService) {
@@ -51,6 +59,9 @@ namespace dnSpy.Decompiler.Upstream {
 			Load();
 			Settings.VersionChanged += (s, e) => Save();
 			Language = new UpstreamCSharpLanguage(Settings);
+#if DEBUG
+			ILAstLanguages = ILAst.UpstreamILAstLanguage.Create(Language).ToArray();
+#endif
 		}
 
 		void Load() {
@@ -107,12 +118,24 @@ namespace dnSpy.Decompiler.Upstream {
 	[Export(typeof(IDecompilerCreator))]
 	sealed class UpstreamDecompilerCreator : IDecompilerCreator {
 		readonly UpstreamLanguageService service;
+		readonly DecompilerSettingsService? decompilerSettingsService;
 
+		// The IL settings are exported by dnSpy's other decompiler extension: without it, there's no "IL with C#"
 		[ImportingConstructor]
-		UpstreamDecompilerCreator(UpstreamLanguageService service) => this.service = service;
+		UpstreamDecompilerCreator(UpstreamLanguageService service, [Import(AllowDefault = true)] DecompilerSettingsService? decompilerSettingsService) {
+			this.service = service;
+			this.decompilerSettingsService = decompilerSettingsService;
+		}
 
 		public IEnumerable<IDecompiler> Create() {
 			yield return service.Language;
+			// "IL with C# (ILSpy 11.2)": dnSpy's IL with this decompiler's C# code
+			if (decompilerSettingsService is not null)
+				yield return ILWithCSharpDecompiler.CreateUpstream(decompilerSettingsService.ILDecompilerSettings, service.Language);
+#if DEBUG
+			foreach (var ilast in service.ILAstLanguages)
+				yield return ilast;
+#endif
 		}
 	}
 

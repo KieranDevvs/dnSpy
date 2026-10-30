@@ -43,6 +43,13 @@ namespace dnSpy.Decompiler.Upstream {
 		[BaseDefinition(ContentTypes.DecompiledCode)]
 		[BaseDefinition(ContentTypes.CSharp)]
 		static readonly ContentTypeDefinition? CSharpUpstreamContentTypeDefinition;
+
+#if DEBUG
+		[Export]
+		[Name(ILAst.UpstreamILAstLanguage.ContentTypeName)]
+		[BaseDefinition(ContentTypes.DecompiledCode)]
+		static readonly ContentTypeDefinition? ILAstUpstreamContentTypeDefinition;
+#endif
 #pragma warning restore CS0169
 	}
 }

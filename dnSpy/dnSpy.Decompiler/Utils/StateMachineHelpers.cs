@@ -27,6 +27,7 @@ namespace dnSpy.Decompiler.Utils {
 		static readonly UTF8String IAsyncStateMachine = new UTF8String("IAsyncStateMachine");
 		static readonly UTF8String AsyncStateMachineAttribute = new UTF8String("AsyncStateMachineAttribute");
 		static readonly UTF8String IteratorStateMachineAttribute = new UTF8String("IteratorStateMachineAttribute");
+		static readonly UTF8String AsyncIteratorStateMachineAttribute = new UTF8String("AsyncIteratorStateMachineAttribute");
 		static readonly UTF8String stringSystem = new UTF8String("System");
 		static readonly UTF8String stringType = new UTF8String("Type");
 		static readonly UTF8String stringIDisposable = new UTF8String("IDisposable");
@@ -92,7 +93,9 @@ namespace dnSpy.Decompiler.Utils {
 
 		static bool IsStateMachineTypeAttribute(ITypeDefOrRef tdr) =>
 			EqualsName(tdr, System_Runtime_CompilerServices, AsyncStateMachineAttribute) ||
-			EqualsName(tdr, System_Runtime_CompilerServices, IteratorStateMachineAttribute);
+			EqualsName(tdr, System_Runtime_CompilerServices, IteratorStateMachineAttribute) ||
+			// C# 8 async streams (IAsyncEnumerable<T>, IAsyncEnumerator<T>)
+			EqualsName(tdr, System_Runtime_CompilerServices, AsyncIteratorStateMachineAttribute);
 
 		static TypeDef? GetAsyncStateMachineTypeFromInstructionsCore(MethodDef method) {
 			var body = method.Body;

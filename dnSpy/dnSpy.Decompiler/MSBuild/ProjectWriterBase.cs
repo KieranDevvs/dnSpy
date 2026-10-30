@@ -116,6 +116,16 @@ namespace dnSpy.Decompiler.MSBuild {
 			return null;
 		}
 
+		/// <summary>
+		/// Writes the properties the decompiler's code needs (<see cref="IProjectPropertiesProvider"/>), e.g. LangVersion
+		/// </summary>
+		protected void WriteDecompilerProperties(System.Xml.XmlWriter writer) {
+			if (project.Options.Decompiler is not IProjectPropertiesProvider provider)
+				return;
+			foreach (var kv in provider.GetProjectProperties(project.Module))
+				writer.WriteElementString(kv.Key, kv.Value);
+		}
+
 		protected string GetRootNamespace() => string.IsNullOrEmpty(project.DefaultNamespace) ? GetAssemblyName() : project.DefaultNamespace;
 
 		protected string GetAssemblyName() => project.AssemblyName;

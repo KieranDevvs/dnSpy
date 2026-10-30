@@ -102,7 +102,7 @@ namespace dnSpy.Decompiler.Upstream {
 			var output = new TrackingTextOutput();
 			syntaxTree.AcceptVisitor(new InsertParenthesesVisitor { InsertParenthesesForReadability = true });
 			var tokenWriter = TokenWriter.InsertRequiredSpaces(TokenWriter.WrapInWriterThatSetsLocationsInAST(new LocatableTextTokenWriter(output, settings)));
-			syntaxTree.AcceptVisitor(new CSharpOutputVisitor(tokenWriter, settings.CSharpFormattingOptions));
+			syntaxTree.AcceptVisitor(new DnSpyOutputVisitor(tokenWriter, settings.CSharpFormattingOptions));
 
 			var sequencePoints = decompiler.CreateSequencePoints(syntaxTree);
 			var repairs = new List<string>();

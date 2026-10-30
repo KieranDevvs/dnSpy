@@ -41,12 +41,13 @@ using IMethod = ICSharpCode.Decompiler.TypeSystem.IMethod;
 
 namespace dnSpy.Decompiler.Upstream {
 	// The code that dnSpy's edit code commands (Edit Method, Edit Class, Add Class Members, Edit Assembly
-	// Attributes) compile
+	// Attributes) compile, and the partial types of Export to Project (UpstreamCSharpLanguage.Project.cs)
 	sealed partial class UpstreamCSharpLanguage {
 		public override bool CanDecompile(DecompilationType decompilationType) {
 			switch (decompilationType) {
 			case DecompilationType.TypeMethods:
 			case DecompilationType.AssemblyInfo:
+			case DecompilationType.PartialType:
 				return true;
 			}
 			return false;
@@ -59,6 +60,9 @@ namespace dnSpy.Decompiler.Upstream {
 				return;
 			case DecompilationType.AssemblyInfo:
 				DecompileAssemblyInfo((DecompileAssemblyInfo)data);
+				return;
+			case DecompilationType.PartialType:
+				DecompilePartialType((DecompilePartialType)data);
 				return;
 			}
 			base.Decompile(decompilationType, data);

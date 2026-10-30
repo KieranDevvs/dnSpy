@@ -295,6 +295,8 @@ namespace dnSpy.Decompiler.Upstream.Output {
 				return accessor.GetSymbol() as ICSharpCode.Decompiler.TypeSystem.IMethod;
 			case OperatorDeclaration op when keyword == "operator":
 				return op.GetSymbol() as ICSharpCode.Decompiler.TypeSystem.IMethod;
+			case MethodDeclaration md when keyword == "operator" && md.Annotation<Transforms.CompoundAssignmentOperatorAnnotation>() is not null:
+				return md.GetSymbol() as ICSharpCode.Decompiler.TypeSystem.IMethod;
 			default:
 				return null;
 			}

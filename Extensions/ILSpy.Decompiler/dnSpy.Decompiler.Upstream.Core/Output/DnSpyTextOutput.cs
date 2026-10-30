@@ -211,8 +211,10 @@ namespace dnSpy.Decompiler.Upstream.Output {
 			}
 		}
 
-		void WriteText(string text, object? reference, DecompilerReferenceFlags flags, object color) {
+		void WriteText(string? text, object? reference, DecompilerReferenceFlags flags, object color) {
 			FlushBuffer();
+			// Upstream can write a null name (e.g. stack slots in the typed IL view): nothing is written, like upstream's outputs
+			text ??= string.Empty;
 			if (IsIdentifier) {
 				text = IdentifierEscaper.Escape(text);
 				if (pendingAt) {
@@ -226,6 +228,8 @@ namespace dnSpy.Decompiler.Upstream.Output {
 		}
 
 		void WriteCore(string text, object? reference, DecompilerReferenceFlags flags, object color) {
+			if (text.Length == 0)
+				return;
 			int start = output.NextPosition;
 			if (reference is null)
 				output.Write(text, color);

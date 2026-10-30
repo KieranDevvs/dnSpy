@@ -27,6 +27,12 @@ namespace dnSpy.Decompiler.Upstream {
 	/// module when it's saved, so it stays edited.
 	/// </summary>
 	sealed class ModuleEditTracker {
+		/// <summary>
+		/// Being edited is a property of the module: all the users of the upstream decompiler share this one
+		/// (<see cref="UpstreamCSharpLanguage"/> is told about edits, <see cref="UpstreamILAst"/> isn't)
+		/// </summary>
+		public static ModuleEditTracker Shared { get; } = new ModuleEditTracker();
+
 		readonly ConditionalWeakTable<ModuleDef, object> modified = new ConditionalWeakTable<ModuleDef, object>();
 		static readonly object marker = new object();
 

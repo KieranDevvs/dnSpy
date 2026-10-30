@@ -112,6 +112,7 @@ namespace dnSpy.Decompiler.MSBuild {
 				if (project.AllowUnsafeBlocks)
 					writer.WriteElementString("AllowUnsafeBlocks", "True");
 				writer.WriteElementString("EnableDefaultItems", "False");
+				WriteDecompilerProperties(writer);
 				writer.WriteEndElement();
 
 				writer.WriteStartElement("PropertyGroup");

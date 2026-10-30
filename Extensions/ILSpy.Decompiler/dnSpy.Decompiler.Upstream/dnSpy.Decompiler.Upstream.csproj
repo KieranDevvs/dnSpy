@@ -23,10 +23,14 @@
     <ProjectReference Include="..\..\..\dnSpy\dnSpy.Contracts.DnSpy\dnSpy.Contracts.DnSpy.csproj" />
     <ProjectReference Include="..\..\..\dnSpy\dnSpy.Contracts.Logic\dnSpy.Contracts.Logic.csproj" />
     <ProjectReference Include="..\dnSpy.Decompiler.Upstream.Core\dnSpy.Decompiler.Upstream.Core.csproj" />
+    <!-- dnSpy's IL disassembler and IL settings ("IL with C# (ILSpy 11.2)") -->
+    <ProjectReference Include="..\dnSpy.Decompiler.ILSpy.Core\dnSpy.Decompiler.ILSpy.Core.csproj" />
   </ItemGroup>
 
   <ItemGroup>
     <PackageReference Include="Microsoft.VisualStudio.Text.UI.Wpf" Version="$(MSVSTextVersion)" />
   </ItemGroup>
+
+  <Import Project="..\AliasLegacyDecompiler.targets" />
 
 </Project>

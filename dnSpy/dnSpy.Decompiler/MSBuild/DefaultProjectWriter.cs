@@ -96,6 +96,7 @@ namespace dnSpy.Decompiler.MSBuild {
 					writer.WriteElementString("ApplicationIcon", GetRelativePath(project.ApplicationIcon.Filename));
 				if (project.StartupObject is not null)
 					writer.WriteElementString("StartupObject", project.StartupObject);
+				WriteDecompilerProperties(writer);
 				writer.WriteEndElement();
 
 				// Debug property group

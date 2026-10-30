@@ -33,27 +33,77 @@ namespace dnSpy.Decompiler.ILSpy.Core.Mixed {
 
 		public IEnumerable<IDecompiler> Create() {
 			yield return new ILWithCSharpDecompiler(decompilerSettingsService.ILDecompilerSettings, decompilerSettingsService.CSharpVBDecompilerSettings);
+			// dnSpy.Console: the upstream C# decompiler is in another assembly. (dnSpy creates this decompiler in its
+			// extension, with the C# decompiler that has the user's settings.)
+			if (ReferenceEquals(decompilerSettingsService, DecompilerSettingsService.__Instance_DONT_USE) && TryCreateUpstreamCSharpDecompiler() is IDecompiler csharp)
+				yield return ILWithCSharpDecompiler.CreateUpstream(decompilerSettingsService.ILDecompilerSettings, csharp);
+		}
+
+		static IDecompiler? TryCreateUpstreamCSharpDecompiler() {
+			try {
+				var type = Type.GetType("dnSpy.Decompiler.Upstream.UpstreamDecompilerProvider, dnSpy.Decompiler.Upstream.Core");
+				if (type is null)
+					return null;
+				var provider = (IDecompilerProvider)Activator.CreateInstance(type)!;
+				foreach (var decompiler in provider.Create()) {
+					if (decompiler.GenericGuid == DecompilerConstants.LANGUAGE_CSHARP)
+						return decompiler;
+				}
+			}
+			catch (Exception ex) when (ex is System.IO.IOException || ex is BadImageFormatException || ex is TypeLoadException || ex is MissingMethodException || ex is System.Reflection.TargetInvocationException) {
+			}
+			return null;
 		}
 	}
 
 	sealed class ILWithCSharpDecompiler : DecompilerBase {
 		public override DecompilerSettingsBase Settings => ilLangSettings;
 		readonly ILDecompilerSettings ilLangSettings;
-		readonly CSharpVBDecompilerSettings csharpLangSettings;
-		readonly Func<BuilderCache> createBuilderCache;
+		readonly CSharpVBDecompilerSettings? csharpLangSettings;
+		readonly Func<BuilderCache>? createBuilderCache;
+		/// <summary>
+		/// The C# decompiler that writes the C# code, or null to use the legacy decompiler (<see cref="csharpLangSettings"/>)
+		/// </summary>
+		readonly IDecompiler? csharpDecompiler;
+
+		/// <summary>
+		/// "IL with C#" with the C# code of the upstream C# decompiler ("C# (ILSpy 11.2)")
+		/// </summary>
+		public static readonly Guid UpstreamLanguageGuid = new Guid("5B0D8E7E-3C2A-4F1B-9A64-7F0C2D9E1A21");
 
 		public ILWithCSharpDecompiler(ILDecompilerSettings ilLangSettings, CSharpVBDecompilerSettings csharpLangSettings) {
 			this.ilLangSettings = ilLangSettings;
 			this.csharpLangSettings = csharpLangSettings;
-			createBuilderCache = () => new BuilderCache(this.csharpLangSettings.Settings.SettingsVersion);
+			createBuilderCache = () => new BuilderCache(csharpLangSettings.Settings.SettingsVersion);
+			OrderUI = DecompilerConstants.IL_WITH_CSHARP_ILSPY_ORDERUI;
+			UniqueNameUI = "IL with C#";
+			UniqueGuid = DecompilerConstants.LANGUAGE_IL_WITH_CSHARP_ILSPY;
 		}
 
-		public override double OrderUI => DecompilerConstants.IL_WITH_CSHARP_ILSPY_ORDERUI;
+		ILWithCSharpDecompiler(ILDecompilerSettings ilLangSettings, IDecompiler csharpDecompiler) {
+			this.ilLangSettings = ilLangSettings;
+			this.csharpDecompiler = csharpDecompiler;
+			OrderUI = DecompilerConstants.IL_WITH_CSHARP_ILSPY_ORDERUI + 1;
+			// "IL with C# (ILSpy 11.2)"
+			UniqueNameUI = "IL with " + csharpDecompiler.UniqueNameUI;
+			UniqueGuid = UpstreamLanguageGuid;
+		}
+
+		/// <summary>
+		/// Creates the "IL with C#" decompiler that uses another C# decompiler. It must add the debug info of the methods
+		/// it decompiles (<see cref="PredefinedCustomDataIds.DebugInfo"/>) to the output.
+		/// </summary>
+		/// <param name="ilLangSettings">IL settings</param>
+		/// <param name="csharpDecompiler">C# decompiler</param>
+		public static IDecompiler CreateUpstream(ILDecompilerSettings ilLangSettings, IDecompiler csharpDecompiler) =>
+			new ILWithCSharpDecompiler(ilLangSettings, csharpDecompiler ?? throw new ArgumentNullException(nameof(csharpDecompiler)));
+
+		public override double OrderUI { get; }
 		public override string ContentTypeString => ContentTypesInternal.ILWithCSharpILSpy;
 		public override string GenericNameUI => DecompilerConstants.GENERIC_NAMEUI_IL_WITH_CSHARP;
-		public override string UniqueNameUI => "IL with C#";
+		public override string UniqueNameUI { get; }
 		public override Guid GenericGuid => DecompilerConstants.LANGUAGE_IL;
-		public override Guid UniqueGuid => DecompilerConstants.LANGUAGE_IL_WITH_CSHARP_ILSPY;
+		public override Guid UniqueGuid { get; }
 		public override string FileExtension => ".il";
 
 		ReflectionDisassembler CreateReflectionDisassembler(IDecompilerOutput output, DecompilationContext ctx, IMemberDef member) =>
@@ -99,6 +149,12 @@ namespace dnSpy.Decompiler.ILSpy.Core.Mixed {
 
 		(MethodDebugInfo debugInfo, MethodDebugInfo? stateMachineDebugInfo) TryDecompileCode(MethodDef method, DecompilationContext ctx, DecompilerOutputImpl output, bool disableStateMachineDecompilation) {
 			output.Initialize(method);
+			if (csharpDecompiler is not null) {
+				// A compiler-generated method (e.g. the MoveNext method of an async method or iterator) is decompiled as is
+				csharpDecompiler.Decompile(method, output, ctx);
+				return output.TryGetMethodDebugInfo();
+			}
+			Debug2.Assert(csharpLangSettings is not null && createBuilderCache is not null);
 			var settings = csharpLangSettings.Settings.Clone();
 			settings.UsingDeclarations = false;
 			if (disableStateMachineDecompilation) {

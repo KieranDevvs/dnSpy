@@ -107,6 +107,82 @@ namespace dnSpy.Decompiler.Upstream.Tests {
 			}
 		}
 
+		/// <summary>
+		/// A C# 12 inline array argument ('Path.Combine(a, b, c, d, e)' passes a ReadOnlySpan of the core library's
+		/// InlineArray5) when the core library can't be resolved: upstream 11.2 leaves the argument out of the tree and
+		/// its output throws (the whole type failed to decompile). DnSpyOutputVisitor writes a comment instead.
+		/// </summary>
+		[Fact]
+		public void InlineArrayArgument_UnresolvedCoreLibrary_DoesNotFailTheType() {
+			const string source = """
+				public class Paths {
+					public static string Combine(string a, string b, string c, string d, string e) => System.IO.Path.Combine(a, b, c, d, e);
+					public static int Other() => 42;
+				}
+				""";
+			var image = TestCompiler.Compile(nameof(InlineArrayArgument_UnresolvedCoreLibrary_DoesNotFailTheType), source).Image;
+			Assert.Contains("InlineArray5", System.Text.Encoding.ASCII.GetString(image));
+			// Nothing resolves (e.g. an assembly whose references aren't available)
+			var module = ModuleDefMD.Load(image, new ModuleContext(NullResolver.Instance, NullResolver.Instance));
+			var type = module.Find("Paths", false);
+			var text = LanguageRunner.Decompile(LanguageRunner.Create(), type).Text;
+			log.WriteLine(text);
+			Assert.Contains("public static int Other()", text);
+			Assert.Contains("Path.Combine(", text);
+		}
+
+		/// <summary>
+		/// Upstream 11.2 moves a constructor's assignment to a field initializer when the parameter it reads is inside
+		/// a C# conversion ('(int)(code - 4611)'), which doesn't compile and empties the constructor (Iced's MvexInfo).
+		/// ConstructorParameterInitializerTransform moves it back.
+		/// </summary>
+		[Theory]
+		[InlineData("struct")]
+		[InlineData("sealed class")]
+		public void ConstructorAssignmentReadingAParameter_StaysInTheConstructor(string kind) {
+			string source = $$"""
+				public enum Code { A = 4611, B, C }
+				public readonly {{(kind == "struct" ? "struct" : "class")}} Info {
+					public int Other() => 1;
+					readonly int index;
+					public Info(Code code) => index = (int)code - 4611;
+					public int Index => index;
+				}
+				public static class Program {
+					public static int Run() => new Info(Code.C).Index;
+				}
+				""";
+			if (kind != "struct")
+				source = source.Replace("public readonly class", "public sealed class");
+			var compiled = TestCompiler.Compile(nameof(ConstructorAssignmentReadingAParameter_StaysInTheConstructor) + kind.Replace(" ", ""), source);
+			var module = compiled.Load();
+			var text = LanguageRunner.Decompile(LanguageRunner.Create(), module.Find("Info", false)).Text;
+			log.WriteLine(text);
+			Assert.DoesNotContain("int index = ", text);
+			Assert.Matches(@"public Info\(Code code\)\s*\{\s*index = \(int\)\(code - 4611\);\s*\}", text);
+			// Same code as the compiler's: it compiles and runs the same
+			var roundTrip = TestCompiler.Compile(nameof(ConstructorAssignmentReadingAParameter_StaysInTheConstructor) + kind.Replace(" ", "") + "2",
+				"public enum Code { A = 4611, B, C }\n" + text + "\npublic static class Program { public static int Run() => new Info(Code.C).Index; }").Load();
+			Assert.NotNull(roundTrip.Find("Info", false));
+		}
+
+		/// <summary>
+		/// Compiler-generated types (shown in the tree with "show hidden compiler generated types and members") are
+		/// decompiled: upstream's DecompileTypes() skips them
+		/// </summary>
+		[Fact]
+		public void HiddenCompilerGeneratedTypes_AreDecompiled() {
+			var module = TestCompiler.Compile(nameof(HiddenCompilerGeneratedTypes_AreDecompiled), TestPrograms.StateMachines).Load();
+			var hidden = module.GetTypes().Where(a => a.IsNested && a.Name.String.StartsWith("<", System.StringComparison.Ordinal)).ToList();
+			Assert.True(hidden.Count >= 3, hidden.Count.ToString());
+			var language = LanguageRunner.Create();
+			foreach (var type in hidden) {
+				var text = LanguageRunner.Decompile(language, type).Text;
+				Assert.True(text.Contains("class ", System.StringComparison.Ordinal) || text.Contains("struct ", System.StringComparison.Ordinal), type.FullName + ":\n" + text);
+				Assert.Contains(type.Name.String, text);
+			}
+		}
+
 		[Fact]
 		public void ModernCSharp_IsDecompiledWithModernSyntax() {
 			var module = TestCompiler.Compile(nameof(ModernCSharp_IsDecompiledWithModernSyntax), TestPrograms.ModernCSharp).Load();
