@@ -27,8 +27,8 @@ using ICSharpCode.Decompiler.CSharp;
 
 namespace dnSpy.Decompiler.Upstream.CorpusRunner {
 	/// <summary>
-	/// inspect --type FULLNAME [--method NAME] [--engine upstream|legacy] [--text true] ASSEMBLY
-	/// Prints a method's IL and the debug info statements an engine produced for it (--text: and its decompiled
+	/// inspect --type FULLNAME [--method NAME] [--text true] ASSEMBLY
+	/// Prints a method's IL and the debug info statements the decompiler produced for it (--text: and its decompiled
 	/// code). With the environment variable SHAPER_TRACE set to part of a method's full name, also prints the
 	/// statement shaper's steps for that method.
 	/// </summary>
@@ -51,24 +51,18 @@ namespace dnSpy.Decompiler.Upstream.CorpusRunner {
 			var top = type;
 			while (top.DeclaringType is not null)
 				top = top.DeclaringType;
-			string text;
-			System.Collections.Generic.IReadOnlyList<dnSpy.Contracts.Decompiler.MethodDebugInfo> infos;
-			if (options.Get("engine", "upstream") == "upstream") {
-				var d = new UpstreamCSharpDecompiler(new ModuleBridgeCache(new ModuleBridgeOptions()), new DecompilerSettings(LanguageVersion.Latest) { ThrowOnAssemblyResolveErrors = false });
-				var r = d.DecompileType(top);
-				(text, infos) = (r.Text, r.MethodDebugInfos);
-				foreach (var kv in r.RawSequencePoints!) {
-					if (kv.Key.MoveNextMethod?.Name != methodName && kv.Key.Method?.Name != methodName)
-						continue;
-					if (kv.Key.MoveNextMethod is { } mn && mn.DeclaringTypeDefinition?.Name != type.Name.String)
-						continue;
-					Console.WriteLine($"== raw upstream sequence points for {kv.Key.Method?.FullName} (MoveNext: {kv.Key.MoveNextMethod?.FullName})");
-					foreach (var sp in kv.Value)
-						Console.WriteLine($"   IL_{sp.Offset:X4}-IL_{sp.EndOffset:X4} {sp.StartLine}:{sp.StartColumn}-{sp.EndLine}:{sp.EndColumn}{(sp.IsHidden ? " hidden" : "")}");
-				}
+			var d = new UpstreamCSharpDecompiler(new ModuleBridgeCache(new ModuleBridgeOptions()), new DecompilerSettings(LanguageVersion.Latest) { ThrowOnAssemblyResolveErrors = false });
+			var r = d.DecompileType(top);
+			var (text, infos) = (r.Text, r.MethodDebugInfos);
+			foreach (var kv in r.RawSequencePoints!) {
+				if (kv.Key.MoveNextMethod?.Name != methodName && kv.Key.Method?.Name != methodName)
+					continue;
+				if (kv.Key.MoveNextMethod is { } mn && mn.DeclaringTypeDefinition?.Name != type.Name.String)
+					continue;
+				Console.WriteLine($"== raw upstream sequence points for {kv.Key.Method?.FullName} (MoveNext: {kv.Key.MoveNextMethod?.FullName})");
+				foreach (var sp in kv.Value)
+					Console.WriteLine($"   IL_{sp.Offset:X4}-IL_{sp.EndOffset:X4} {sp.StartLine}:{sp.StartColumn}-{sp.EndLine}:{sp.EndColumn}{(sp.IsHidden ? " hidden" : "")}");
 			}
-			else
-				(text, infos) = LegacyDecompiler.DecompileType(top);
 			foreach (var info in infos.Where(i => i.Method.DeclaringType == type && (methodName.Length == 0 || i.Method.Name == methodName))) {
 				Console.WriteLine($"== {info.Method.FullName} span={info.Span}");
 				foreach (var instr in info.Method.Body.Instructions)

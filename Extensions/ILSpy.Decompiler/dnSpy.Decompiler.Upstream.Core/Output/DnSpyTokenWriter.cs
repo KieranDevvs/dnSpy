@@ -280,7 +280,7 @@ namespace dnSpy.Decompiler.Upstream.Output {
 		}
 
 		public override void WriteKeyword(string keyword) {
-			// Like dnSpy's other C# decompiler, an accessor's keyword ('get', 'set'...) and an operator's 'operator'
+			// Like dnSpy's previous C# decompiler, an accessor's keyword ('get', 'set'...) and an operator's 'operator'
 			// keyword are their method's definition: the tree view and the edit dialog find the method there
 			if (GetKeywordDefinition(keyword) is ICSharpCode.Decompiler.TypeSystem.IMethod method) {
 				Write(BoxedTextColor.Keyword, BoxedTextColor.Keyword, () => output.WriteReference(method, keyword, isDefinition: true));

@@ -145,7 +145,6 @@ namespace dnSpy.Decompiler.Upstream.Tests {
 			var language = LanguageRunner.Create();
 			foreach (var (engine, decompile) in new (string, Func<TypeDef, (string, IReadOnlyList<MethodDebugInfo>)>)[] {
 				("upstream", t => LanguageRunner.DecompileType(language, t)),
-				("legacy", LegacyDecompiler.DecompileType),
 			}) {
 				var engineModule = compiled.Load();
 				var models = new Dictionary<uint, StepModel>();

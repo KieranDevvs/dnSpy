@@ -57,7 +57,7 @@ namespace dnSpy.Decompiler.Upstream.ILAst {
 	/// language's settings, images and type systems.
 	/// </summary>
 	sealed class UpstreamILAstLanguage : DecompilerBase {
-		public const string ContentTypeName = "ILAst ILSpy Upstream";
+		public const string ContentTypeName = "ILAst ILSpy";
 
 		readonly UpstreamCSharpLanguage csharp;
 		readonly UpstreamILAstView view;
@@ -88,20 +88,14 @@ namespace dnSpy.Decompiler.Upstream.ILAst {
 		public override string GenericNameUI => "ILAst";
 		public override Guid GenericGuid => DecompilerConstants.LANGUAGE_ILAST_ILSPY;
 		public override string FileExtension => ".il";
-		// After dnSpy's other ILAst views
-		public override double OrderUI => DecompilerConstants.ILAST_ILSPY_DEBUG_ORDERUI + 1000 + (int)view;
+		public override double OrderUI => DecompilerConstants.ILAST_ILSPY_DEBUG_ORDERUI + (int)view;
 
-		public override string UniqueNameUI {
-			get {
-				var version = typeof(UpstreamCSharpDecompilerEngine).Assembly.GetName().Version;
-				var ilspy = version is null ? "ILSpy" : $"ILSpy {version.Major}.{version.Minor}";
-				return view switch {
-					UpstreamILAstView.TypedIL => $"Typed IL ({ilspy})",
-					UpstreamILAstView.Unoptimized => $"ILAst ({ilspy}, unoptimized)",
-					_ => $"ILAst ({ilspy})",
-				};
-			}
-		}
+		public override string UniqueNameUI =>
+			view switch {
+				UpstreamILAstView.TypedIL => "Typed IL",
+				UpstreamILAstView.Unoptimized => "ILAst (unoptimized)",
+				_ => "ILAst",
+			};
 
 		public override Guid UniqueGuid => view switch {
 			UpstreamILAstView.TypedIL => new Guid("A06DC5F0-BAB0-411E-A735-235A1C49F0AE"),

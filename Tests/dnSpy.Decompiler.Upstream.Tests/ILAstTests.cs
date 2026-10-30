@@ -48,11 +48,11 @@ namespace dnSpy.Decompiler.Upstream.Tests {
 		public void Identity() {
 			var languages = new UpstreamDecompilerProvider().Create().OfType<UpstreamILAstLanguage>().ToList();
 			Assert.Equal(new[] { UpstreamILAstView.TypedIL, UpstreamILAstView.Unoptimized, UpstreamILAstView.Transformed }, languages.Select(a => a.View));
-			Assert.Equal(new[] { "Typed IL (ILSpy 11.2)", "ILAst (ILSpy 11.2, unoptimized)", "ILAst (ILSpy 11.2)" }, languages.Select(a => a.UniqueNameUI));
+			Assert.Equal(new[] { "Typed IL", "ILAst (unoptimized)", "ILAst" }, languages.Select(a => a.UniqueNameUI));
 			Assert.All(languages, a => Assert.Equal(DecompilerConstants.LANGUAGE_ILAST_ILSPY, a.GenericGuid));
 			Assert.Equal(3, languages.Select(a => a.UniqueGuid).Distinct().Count());
 			Assert.Equal(languages.OrderBy(a => a.OrderUI), languages);
-			Assert.True(languages[0].OrderUI > DecompilerConstants.ILAST_ILSPY_DEBUG_ORDERUI);
+			Assert.True(languages[0].OrderUI >= DecompilerConstants.ILAST_ILSPY_DEBUG_ORDERUI);
 			// dnSpy.Console's "IL with C#" uses the first C# language of the provider
 			Assert.IsType<UpstreamCSharpLanguage>(new UpstreamDecompilerProvider().Create().First(a => a.GenericGuid == DecompilerConstants.LANGUAGE_CSHARP));
 		}

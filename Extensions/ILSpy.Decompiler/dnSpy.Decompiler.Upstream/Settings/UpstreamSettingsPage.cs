@@ -56,6 +56,7 @@ namespace dnSpy.Decompiler.Upstream.SettingsUI {
 		}
 
 		public void OnSettingsModified(IAppRefreshSettings appRefreshSettings) {
+			// C# and "IL with C#"
 			if (appRefreshSettings.Has(UpstreamSettingsPage.RefreshGuid))
 				documentTabService.Refresh(service.GetTabs(documentTabService));
 		}
@@ -76,7 +77,7 @@ namespace dnSpy.Decompiler.Upstream.SettingsUI {
 
 		public override Guid ParentGuid => new Guid(AppSettingsConstants.GUID_DECOMPILER);
 		public override Guid Guid => new Guid("6B5A2F1D-3C8E-4F2A-9B7D-2E4C6A8B0D13");
-		public override double Order => AppSettingsConstants.ORDER_DECOMPILER_SETTINGS_ILSPY_CSHARP + 500;
+		public override double Order => AppSettingsConstants.ORDER_DECOMPILER_SETTINGS_ILSPY_CSHARP;
 		public override string Title => UpstreamCSharpLanguage.LanguageName;
 		public override object? UIObject => uiObject ??= CreateUI();
 
@@ -108,6 +109,7 @@ namespace dnSpy.Decompiler.Upstream.SettingsUI {
 		FrameworkElement CreateUI() {
 			// dnSpy puts the page in a ScrollViewer unless it is one
 			var root = new StackPanel { Margin = new Thickness(5) };
+			root.Children.Add(new TextBlock { Text = "Decompiler: " + UpstreamCSharpLanguage.EngineName + " (ICSharpCode.Decompiler)", Margin = new Thickness(0, 0, 0, 5) });
 
 			var presets = Enum.GetValues(typeof(LanguageVersion)).Cast<LanguageVersion>()
 				.Where(a => a != LanguageVersion.Preview && a != LanguageVersion.Latest)

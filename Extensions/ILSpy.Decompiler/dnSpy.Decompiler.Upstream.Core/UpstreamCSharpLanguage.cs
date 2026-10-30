@@ -63,9 +63,14 @@ namespace dnSpy.Decompiler.Upstream {
 	/// C# decompiler using the unmodified upstream ILSpy engine (ICSharpCode.Decompiler NuGet package)
 	/// </summary>
 	sealed partial class UpstreamCSharpLanguage : DecompilerBase {
-		public static readonly Guid LanguageGuid = new Guid("8D2C76C0-5A6B-4A49-B8A5-2C3A1B9E7F11");
-		public const double LanguageOrderUI = 50;
-		public const string ContentTypeName = "C# ILSpy Upstream";
+		/// <summary>
+		/// dnSpy's C# language (the GUID of the decompiler this one replaced, so saved tabs and settings keep it)
+		/// </summary>
+		public static readonly Guid LanguageGuid = DecompilerConstants.LANGUAGE_CSHARP_ILSPY;
+		/// <summary>
+		/// "C# ILSpy" (defined by the dnSpy.Decompiler.ILSpy extension)
+		/// </summary>
+		public const string ContentTypeName = "C# ILSpy";
 
 		readonly UpstreamDecompilerSettings langSettings;
 		readonly ModuleEditTracker editTracker;
@@ -99,13 +104,15 @@ namespace dnSpy.Decompiler.Upstream {
 			typeSystems = new TypeSystemCache(cache);
 		}
 
+		public const string LanguageName = "C#";
+
 		/// <summary>
-		/// "C# (ILSpy 11.2)"
+		/// "ILSpy 11.2.0.10050", the version of the upstream decompiler (ICSharpCode.Decompiler)
 		/// </summary>
-		public static string LanguageName {
+		public static string EngineName {
 			get {
 				var version = typeof(UpstreamCSharpDecompilerEngine).Assembly.GetName().Version;
-				return version is null ? "C# (ILSpy)" : $"C# (ILSpy {version.Major}.{version.Minor})";
+				return version is null ? "ILSpy" : "ILSpy " + version.ToString();
 			}
 		}
 
@@ -113,9 +120,8 @@ namespace dnSpy.Decompiler.Upstream {
 		public override string ContentTypeString => ContentTypeName;
 		public override string GenericNameUI => DecompilerConstants.GENERIC_NAMEUI_CSHARP;
 		public override string UniqueNameUI => LanguageName;
-		public override double OrderUI => LanguageOrderUI;
-		// Same generic language as dnSpy's other C# decompiler so the C# compiler (Edit Method etc.) is used. Features
-		// this decompiler doesn't support (CanDecompile()) fall back to the other C# decompiler.
+		public override double OrderUI => DecompilerConstants.CSHARP_ILSPY_ORDERUI;
+		// The C# compiler (Edit Method etc.) is used for this generic language
 		public override Guid GenericGuid => DecompilerConstants.LANGUAGE_CSHARP;
 		public override Guid UniqueGuid => LanguageGuid;
 		public override string FileExtension => ".cs";
@@ -197,7 +203,7 @@ namespace dnSpy.Decompiler.Upstream {
 		}
 		#endregion
 
-		// In its namespace (like ILSpy and dnSpy's other C# decompiler): Export to Project saves this code to a file
+		// In its namespace (like ILSpy and dnSpy's previous C# decompiler): Export to Project saves this code to a file
 		public override void Decompile(TypeDef type, IDecompilerOutput output, DecompilationContext ctx) =>
 			Decompile(type.Module, GetMethods(type), output, ctx, DecompileTypeInNamespace, type);
 

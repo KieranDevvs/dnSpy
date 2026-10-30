@@ -78,13 +78,11 @@ namespace dnSpy.Decompiler.Upstream.Tests {
 				return;
 			int methodSamples = int.TryParse(Environment.GetEnvironmentVariable("EDIT_CORPUS_SAMPLES"), out int n) ? n : 30;
 			int typeSamples = Math.Max(1, methodSamples / 4);
-			var engines = (Environment.GetEnvironmentVariable("EDIT_ENGINE") ?? "upstream,legacy").Split(',');
+			var engines = new[] { "upstream" };
 			// Optional file that gets each edit before it starts, to find the edit if the test host crashes
 			var progress = Environment.GetEnvironmentVariable("EDIT_CORPUS_PROGRESS");
 			// Optional: only these edits ("File.dll:0x06000001,File.dll:0x02000002"), e.g. to repeat one
 			var only = Environment.GetEnvironmentVariable("EDIT_CORPUS_ONLY")?.Split(',').Select(a => a.Trim()).ToHashSet(StringComparer.OrdinalIgnoreCase);
-			// The legacy engine is a debug build here: its assertions would throw in the test host, not in dnSpy
-			System.Diagnostics.Trace.Listeners.Clear();
 			var totals = engines.ToDictionary(e => e, e => new Stats());
 			foreach (var file in Directory.GetFiles(dir, "*.dll").OrderBy(a => a, StringComparer.Ordinal)) {
 				var module = Load(file);
@@ -115,7 +113,7 @@ namespace dnSpy.Decompiler.Upstream.Tests {
 						foreach (var token in tokens) {
 							if (only is not null && !only.Contains($"{Path.GetFileName(file)}:0x{token:X8}"))
 								continue;
-							var decompiler = engine == "legacy" ? LegacyDecompiler.CSharp : LanguageRunner.Create();
+							var decompiler = LanguageRunner.Create();
 							if (progress is not null)
 								File.AppendAllText(progress, $"{engine} {kind} {Path.GetFileName(file)} 0x{token:X8}{Environment.NewLine}");
 							var (category, errors, example, editSeconds) = Edit(decompiler, kind, file, token);
@@ -163,7 +161,7 @@ namespace dnSpy.Decompiler.Upstream.Tests {
 				if (Environment.GetEnvironmentVariable("EDIT_CORPUS_DUMP") is string dumpDir) {
 					Directory.CreateDirectory(dumpDir);
 					foreach (var doc in result.Documents)
-						File.WriteAllText(Path.Combine(dumpDir, $"{Path.GetFileNameWithoutExtension(file)}-{token:X8}-{(decompiler is UpstreamCSharpLanguage ? "upstream" : "legacy")}-{doc.Name}"), doc.Text);
+						File.WriteAllText(Path.Combine(dumpDir, $"{Path.GetFileNameWithoutExtension(file)}-{token:X8}-{doc.Name}"), doc.Text);
 				}
 				if (result.DecompileError is not null)
 					return ("decompile", new[] { "decompile" }, result.Describe());

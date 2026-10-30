@@ -343,8 +343,8 @@ namespace dnSpy.Decompiler.Upstream.Tests {
 		}
 
 		/// <summary>
-		/// Opt-in (EXPORT_CORPUS=dir): exports each assembly in the directory (EXPORT_ENGINE=upstream,legacy) and compiles
-		/// the project's code against the assembly's references. EXPORT_CORPUS_OUT=dir keeps the projects.
+		/// Opt-in (EXPORT_CORPUS=dir): exports each assembly in the directory and compiles the project's code against the
+		/// assembly's references. EXPORT_CORPUS_OUT=dir keeps the projects.
 		/// </summary>
 		[Fact]
 		public void ExportAndCompile_RealWorldAssemblies() {
@@ -352,8 +352,7 @@ namespace dnSpy.Decompiler.Upstream.Tests {
 			if (dir is null)
 				return;
 			var outDir = Environment.GetEnvironmentVariable("EXPORT_CORPUS_OUT") ?? Path.Combine(Path.GetTempPath(), "dnspy-export-corpus");
-			var engines = (Environment.GetEnvironmentVariable("EXPORT_ENGINE") ?? "upstream,legacy").Split(',');
-			System.Diagnostics.Trace.Listeners.Clear();
+			var engines = new[] { "upstream" };
 			// Also saved as it goes (the test's output is only shown at the end)
 			Directory.CreateDirectory(outDir);
 			var resultsFile = Path.Combine(outDir, "results.txt");
@@ -371,7 +370,7 @@ namespace dnSpy.Decompiler.Upstream.Tests {
 						resolver.PostSearchPaths.Add(Path.Combine(dir, "refs"));
 					var module = ModuleDefMD.Load(file, context);
 					resolver.AddToCache(module);
-					IDecompiler decompiler = engine == "legacy" ? LegacyDecompiler.CSharp : LanguageRunner.Create();
+					IDecompiler decompiler = LanguageRunner.Create();
 					var projectDir = Path.Combine(outDir, engine, Path.GetFileNameWithoutExtension(file));
 					if (Directory.Exists(projectDir))
 						Directory.Delete(projectDir, recursive: true);

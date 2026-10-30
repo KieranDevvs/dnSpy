@@ -45,6 +45,10 @@ namespace dnSpy.Decompiler.Upstream {
 
 		public UpstreamDecompilerSettings Settings { get; }
 		public UpstreamCSharpLanguage Language { get; }
+		/// <summary>
+		/// "IL with C#", or null if there are no IL settings (the dnSpy.Decompiler.ILSpy extension isn't loaded)
+		/// </summary>
+		public IDecompiler? ILWithCSharp { get; set; }
 #if DEBUG
 		/// <summary>
 		/// The ILAst views (debug builds)
@@ -57,6 +61,8 @@ namespace dnSpy.Decompiler.Upstream {
 			this.settingsService = settingsService;
 			Settings = new UpstreamDecompilerSettings();
 			Load();
+			if (MigrateLegacySettings())
+				Save();
 			Settings.VersionChanged += (s, e) => Save();
 			Language = new UpstreamCSharpLanguage(Settings);
 #if DEBUG
@@ -78,6 +84,59 @@ namespace dnSpy.Decompiler.Upstream {
 			}
 		}
 
+		/// <summary>
+		/// The settings of the C# decompiler this one replaced (dnSpy's fork of ILSpy 2.x)
+		/// </summary>
+		static readonly Guid LEGACY_SETTINGS_GUID = new Guid("6745457F-254B-4B7B-90F1-F948F0721C3B");
+
+		/// <summary>
+		/// The old C# decompiler's settings that this one also has, and their default values in the old decompiler
+		/// </summary>
+		static readonly (string oldName, string newName, bool oldDefault)[] legacySettings = {
+			("AnonymousMethods", nameof(ICSharpCode.Decompiler.DecompilerSettings.AnonymousMethods), true),
+			("ExpressionTrees", nameof(ICSharpCode.Decompiler.DecompilerSettings.ExpressionTrees), true),
+			("YieldReturn", nameof(ICSharpCode.Decompiler.DecompilerSettings.YieldReturn), true),
+			("AsyncAwait", nameof(ICSharpCode.Decompiler.DecompilerSettings.AsyncAwait), true),
+			("QueryExpressions", nameof(ICSharpCode.Decompiler.DecompilerSettings.QueryExpressions), true),
+			("UseDebugSymbols", nameof(ICSharpCode.Decompiler.DecompilerSettings.UseDebugSymbols), true),
+			("ShowXmlDocumentation", nameof(ICSharpCode.Decompiler.DecompilerSettings.ShowXmlDocumentation), true),
+			("SortCustomAttributes", nameof(ICSharpCode.Decompiler.DecompilerSettings.SortCustomAttributes), false),
+			("ShowTokenAndRvaComments", nameof(UpstreamDecompilerSettings.ShowTokenAndRvaComments), true),
+			("ForceShowAllMembers", nameof(UpstreamDecompilerSettings.ShowHiddenMembers), false),
+		};
+
+		/// <summary>
+		/// Once: the settings the user changed in the old C# decompiler, unless this decompiler's settings have been
+		/// changed already. The old settings are removed.
+		/// </summary>
+		/// <returns>true if a setting changed</returns>
+		bool MigrateLegacySettings() {
+			var legacyName = LEGACY_SETTINGS_GUID.ToString();
+			var legacy = settingsService.Sections.FirstOrDefault(a => a.Name == legacyName);
+			if (legacy is null)
+				return false;
+			bool changed = false;
+			if (settingsService.GetOrCreateSection(SETTINGS_GUID).Attributes.Length == 0) {
+				foreach (var (oldName, newName, oldDefault) in legacySettings) {
+					if (!(legacy.Attribute<bool?>(oldName) is bool value) || value == oldDefault)
+						continue;
+					var info = UpstreamDecompilerSettings.AllSettings.FirstOrDefault(a => a.Name == newName);
+					if (info is null || info.GetValue(Settings) == value)
+						continue;
+					disableSave = true;
+					try {
+						info.SetValue(Settings, value);
+					}
+					finally {
+						disableSave = false;
+					}
+					changed = true;
+				}
+			}
+			settingsService.RemoveSection(LEGACY_SETTINGS_GUID);
+			return changed;
+		}
+
 		void Save() {
 			if (disableSave)
 				return;
@@ -91,10 +150,10 @@ namespace dnSpy.Decompiler.Upstream {
 		}
 
 		/// <summary>
-		/// Visible tabs that show this decompiler's output
+		/// Visible tabs that show this decompiler's output (C# and "IL with C#")
 		/// </summary>
 		public IDocumentTab[] GetTabs(IDocumentTabService documentTabService) =>
-			documentTabService.VisibleFirstTabs.Where(t => (t.Content as IDecompilerTabContent)?.Decompiler == Language).ToArray();
+			documentTabService.VisibleFirstTabs.Where(t => (t.Content as IDecompilerTabContent)?.Decompiler is IDecompiler d && (d == Language || d == ILWithCSharp)).ToArray();
 
 		/// <summary>
 		/// Visible tabs that show this decompiler's output of a module in <paramref name="documents"/> or of a
@@ -129,9 +188,9 @@ namespace dnSpy.Decompiler.Upstream {
 
 		public IEnumerable<IDecompiler> Create() {
 			yield return service.Language;
-			// "IL with C# (ILSpy 11.2)": dnSpy's IL with this decompiler's C# code
+			// "IL with C#": dnSpy's IL with this decompiler's C# code
 			if (decompilerSettingsService is not null)
-				yield return ILWithCSharpDecompiler.CreateUpstream(decompilerSettingsService.ILDecompilerSettings, service.Language);
+				yield return service.ILWithCSharp ??= ILWithCSharpDecompiler.Create(decompilerSettingsService.ILDecompilerSettings, service.Language);
 #if DEBUG
 			foreach (var ilast in service.ILAstLanguages)
 				yield return ilast;

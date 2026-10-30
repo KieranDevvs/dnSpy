@@ -38,12 +38,7 @@ namespace dnSpy.Decompiler.Upstream {
 
 	static class ContentTypeDefinitions {
 #pragma warning disable CS0169
-		[Export]
-		[Name(UpstreamCSharpLanguage.ContentTypeName)]
-		[BaseDefinition(ContentTypes.DecompiledCode)]
-		[BaseDefinition(ContentTypes.CSharp)]
-		static readonly ContentTypeDefinition? CSharpUpstreamContentTypeDefinition;
-
+		// The C# language uses "C# ILSpy" (dnSpy.Decompiler.ILSpy's content type definitions)
 #if DEBUG
 		[Export]
 		[Name(ILAst.UpstreamILAstLanguage.ContentTypeName)]

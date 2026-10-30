@@ -15,9 +15,9 @@
 		Build        dnSpy.sln, Debug and Release, .NET Framework 4.8 and .NET 10 (and the test projects)
 		Tests        the headless test suite (Tests\dnSpy.Decompiler.Upstream.Tests) on Windows
 		Baml         BAML -> XAML of dnSpy's own assemblies and the WPF framework (Windows resolves all references)
-		Corpus       decompiles .NET Framework 4.8 assemblies (mscorlib, WinForms, WPF, ...) with both engines
+		Corpus       decompiles .NET Framework 4.8 assemblies (mscorlib, WinForms, WPF, ...)
 		Samples      a console, WPF, WinForms and .NET Framework app: exported with dnSpy.Console (.NET 10 and
-		             .NET Framework builds, both engines), the exported projects built with MSBuild and run
+		             .NET Framework builds), the exported projects built with MSBuild and run
 		Screenshots  starts dnSpy (.NET 10 and .NET Framework, Debug) on the new views and takes screenshots
 
 	The debugger and the edit dialogs need a person: see the checklists listed at the end of summary.md.
@@ -45,11 +45,13 @@ $Summary = New-Object System.Collections.Generic.List[string]
 $Started = Get-Date
 
 # Languages (dnSpy's UniqueGuid)
-$UpstreamCSharp = '8d2c76c0-5a6b-4a49-b8a5-2c3a1b9e7f11'
-$LegacyCSharp = '4162dada-67c3-4de4-a5f3-6552c8353ece'
-$UpstreamILWithCSharp = '5b0d8e7e-3c2a-4f1b-9a64-7f0c2d9e1a21'
-$UpstreamILAst = 'b1f782ff-6947-458c-80cb-d7d652355558'
-$UpstreamTypedIL = 'a06dc5f0-bab0-411e-a735-235a1c49f0ae'
+$CSharp = '4162dada-67c3-4de4-a5f3-6552c8353ece'
+$ILWithCSharp = 'ca52a515-12ae-4182-bc88-81ed037c3d32'
+$ILAst = 'b1f782ff-6947-458c-80cb-d7d652355558'
+$TypedIL = 'a06dc5f0-bab0-411e-a735-235a1c49f0ae'
+# Settings sections: the C# decompiler's, and the one of the decompiler it replaced (migrated once)
+$CSharpSettingsSection = '2e5e8e5f-5b1b-4c61-9c2c-7a2b8e3c4d11'
+$LegacyCSharpSettingsSection = '6745457f-254b-4b7b-90f1-f948f0721c3b'
 
 $env:DOTNET_CLI_TELEMETRY_OPTOUT = '1'
 $env:DOTNET_NOLOGO = '1'
@@ -300,7 +302,7 @@ Invoke-Step 'Corpus' {
 		'WPF\WindowsBase.dll') | ForEach-Object { Join-Path $framework $_ } | Where-Object { Test-Path $_ })
 	$corpusOut = Join-Path $Out 'corpus-netfx'
 	$log = Join-Path $Out 'corpus-netfx.log'
-	$arguments = @($runner, 'run', '--out', $corpusOut, '--engines', 'dnspy,legacy', '--max-types', '150') + $files
+	$arguments = @($runner, 'run', '--out', $corpusOut, '--engines', 'dnspy', '--max-types', '150') + $files
 	$code = Invoke-Logged 'dotnet' $arguments $log 120
 	$report = Join-Path $corpusOut 'report.md'
 	if (Test-Path $report) {
@@ -323,7 +325,7 @@ Invoke-Step 'Samples' {
 	$consoles = @(
 		@{ Name = 'net10'; Exe = Join-Path $Repo 'dnSpy\dnSpy\bin\Release\net10.0-windows\dnSpy.Console.exe' },
 		@{ Name = 'net48'; Exe = Join-Path $Repo 'dnSpy\dnSpy\bin\Release\net48\dnSpy.Console.exe' })
-	$engines = @(@{ Name = 'upstream'; Guid = $UpstreamCSharp }, @{ Name = 'legacy'; Guid = $LegacyCSharp })
+	$engines = @(@{ Name = 'csharp'; Guid = $CSharp })
 	$samples = @(
 		@{ Name = 'ConsoleSample'; Output = 'bin\Release\net10.0\ConsoleSample.exe'; Args = @(); Kinds = @('sdk') },
 		@{ Name = 'WpfSample'; Output = 'bin\Release\net10.0-windows\WpfSample.exe'; Args = @('--selftest'); Kinds = @('sdk') },
@@ -508,6 +510,36 @@ public static class WindowCapture {
 }
 '@
 
+# Checks the settings file dnSpy saved when it was closed. Returns '' or the problems.
+function Test-SavedSettings($scenario, [string]$settings) {
+	$isDefault = -not $scenario.Language
+	$isLegacy = $scenario.ContainsKey('LegacySettings')
+	if (-not $isDefault -and -not $isLegacy) { return '' }
+	if (-not (Test-Path $settings)) { return ' **settings not saved**' }
+	try { [xml]$xml = Get-Content -Raw $settings }
+	catch { return " **settings not read**: $($_.Exception.Message)" }
+	$problems = New-Object System.Collections.Generic.List[string]
+	$sections = @($xml.SelectNodes('//section'))
+	if ($isDefault) {
+		# The tab dnSpy saved has the language it used
+		$tabLanguages = @($sections | Where-Object { $_.GetAttribute('Language') } | ForEach-Object { $_.GetAttribute('Language') })
+		if ($tabLanguages.Count -eq 0) { $problems.Add('no saved tab') }
+		elseif ($tabLanguages[0] -ne $CSharp) { $problems.Add("default language $($tabLanguages[0]), expected C# $CSharp") }
+	}
+	if ($isLegacy) {
+		if (@($sections | Where-Object { $_.GetAttribute('_') -eq $LegacyCSharpSettingsSection }).Count -ne 0) { $problems.Add('the old C# settings are still there') }
+		$new = @($sections | Where-Object { $_.GetAttribute('_') -eq $CSharpSettingsSection }) | Select-Object -First 1
+		if (-not $new) { $problems.Add('no C# settings saved') }
+		else {
+			if ($new.GetAttribute('ShowXmlDocumentation') -ne 'False') { $problems.Add("ShowXmlDocumentation='$($new.GetAttribute('ShowXmlDocumentation'))', expected False") }
+			if ($new.GetAttribute('ShowHiddenMembers') -ne 'True') { $problems.Add("ShowHiddenMembers='$($new.GetAttribute('ShowHiddenMembers'))', expected True") }
+			if ($new.HasAttribute('AnonymousMethods')) { $problems.Add('AnonymousMethods was moved but has its default value') }
+		}
+	}
+	if ($problems.Count -eq 0) { return ' (settings OK)' }
+	return ' **settings:** ' + ($problems -join '; ')
+}
+
 # Returns the .png, or the .bmp if System.Drawing isn't available
 function Convert-ToPng([string]$bmp) {
 	try {
@@ -538,16 +570,19 @@ Invoke-Step 'Screenshots' {
 		}
 	}
 	$scenarios = @(
-		@{ Name = 'csharp-upstream-program'; Language = $UpstreamCSharp; Select = 'T:ConsoleSample.Program'; File = $consoleSample },
-		@{ Name = 'csharp-legacy-program'; Language = $LegacyCSharp; Select = 'T:ConsoleSample.Program'; File = $consoleSample },
-		@{ Name = 'csharp-upstream-counter'; Language = $UpstreamCSharp; Select = 'T:ConsoleSample.Counter'; File = $consoleSample },
-		@{ Name = 'csharp-upstream-collections'; Language = $UpstreamCSharp; Select = 'M:ConsoleSample.Program.Primes'; File = $consoleSample },
-		@{ Name = 'csharp-upstream-mainwindow'; Language = $UpstreamCSharp; Select = 'T:WpfSample.MainWindow'; File = $wpfSample },
-		@{ Name = 'csharp-upstream-playground'; Language = $UpstreamCSharp; Select = 'T:DebuggerPlayground.Scenarios'; File = $playground },
+		@{ Name = 'csharp-program'; Language = $CSharp; Select = 'T:ConsoleSample.Program'; File = $consoleSample },
+		# No --language: a new settings file starts with dnSpy's default language, which must be "C#" (the new engine)
+		@{ Name = 'default-language-program'; Language = $null; Select = 'T:ConsoleSample.Program'; File = $consoleSample },
+		# The settings the user changed in the old C# decompiler are moved to the new one, once
+		@{ Name = 'csharp-migrated-settings'; Language = $CSharp; Select = 'T:ConsoleSample.Counter'; File = $consoleSample; LegacySettings = $true },
+		@{ Name = 'csharp-counter'; Language = $CSharp; Select = 'T:ConsoleSample.Counter'; File = $consoleSample },
+		@{ Name = 'csharp-collections'; Language = $CSharp; Select = 'M:ConsoleSample.Program.Primes'; File = $consoleSample },
+		@{ Name = 'csharp-mainwindow'; Language = $CSharp; Select = 'T:WpfSample.MainWindow'; File = $wpfSample },
+		@{ Name = 'csharp-playground'; Language = $CSharp; Select = 'T:DebuggerPlayground.Scenarios'; File = $playground },
 		# MethodOnly: the method on its own, not its type (the ILAst stepper only follows single methods)
-		@{ Name = 'il-with-csharp-upstream'; Language = $UpstreamILWithCSharp; Select = 'M:ConsoleSample.Program.Describe(System.Object)'; File = $consoleSample; MethodOnly = $true },
-		@{ Name = 'ilast-upstream'; Language = $UpstreamILAst; Select = 'M:ConsoleSample.Program.Describe(System.Object)'; File = $consoleSample; MethodOnly = $true },
-		@{ Name = 'typed-il-upstream'; Language = $UpstreamTypedIL; Select = 'M:ConsoleSample.Program.Describe(System.Object)'; File = $consoleSample; MethodOnly = $true })
+		@{ Name = 'il-with-csharp'; Language = $ILWithCSharp; Select = 'M:ConsoleSample.Program.Describe(System.Object)'; File = $consoleSample; MethodOnly = $true },
+		@{ Name = 'ilast'; Language = $ILAst; Select = 'M:ConsoleSample.Program.Describe(System.Object)'; File = $consoleSample; MethodOnly = $true },
+		@{ Name = 'typed-il'; Language = $TypedIL; Select = 'M:ConsoleSample.Program.Describe(System.Object)'; File = $consoleSample; MethodOnly = $true })
 	$builds = @(
 		@{ Name = 'net10'; Exe = Join-Path $Repo 'dnSpy\dnSpy\bin\Debug\net10.0-windows\dnSpy.exe' },
 		@{ Name = 'net48'; Exe = Join-Path $Repo 'dnSpy\dnSpy\bin\Debug\net48\dnSpy.exe' })
@@ -572,7 +607,16 @@ Invoke-Step 'Screenshots' {
 					'  <section _="1ace15fd-d689-40dc-b1e7-6eec25b3116f" RestoreTabs="True" DecompileFullType="False" />',
 					'</settings>') | Set-Content -Encoding UTF8 $settings
 			}
-			$arguments = @('--multiple', '--settings-file', "`"$settings`"", '--language', $scenario.Language, '--select', "`"$($scenario.Select)`"", "`"$($scenario.File)`"")
+			if ($scenario.ContainsKey('LegacySettings')) {
+				# Changed in the old C# decompiler: no XML documentation, show hidden members. AnonymousMethods has its
+				# default value, so it isn't moved.
+				@('<?xml version="1.0" encoding="utf-8"?>', '<settings>',
+					"  <section _=`"$LegacyCSharpSettingsSection`" ShowXmlDocumentation=`"False`" ForceShowAllMembers=`"True`" AnonymousMethods=`"True`" />",
+					'</settings>') | Set-Content -Encoding UTF8 $settings
+			}
+			$arguments = @('--multiple', '--settings-file', "`"$settings`"")
+			if ($scenario.Language) { $arguments += @('--language', $scenario.Language) }
+			$arguments += @('--select', "`"$($scenario.Select)`"", "`"$($scenario.File)`"")
 			$process = Start-Process -FilePath $build.Exe -ArgumentList $arguments -PassThru
 			$deadline = (Get-Date).AddSeconds(90)
 			while ($process.MainWindowHandle -eq [IntPtr]::Zero -and -not $process.HasExited -and (Get-Date) -lt $deadline) {
@@ -597,10 +641,15 @@ Invoke-Step 'Screenshots' {
 			if (-not $process.HasExited) { $saved = [WindowCapture]::SaveBmp($process.MainWindowHandle, $file) }
 			if ($saved) { $file = Convert-ToPng $file }
 			$status = if ($process.HasExited) { "**dnSpy exited** (exit code $($process.ExitCode))" } elseif ($saved) { "screenshots/$(Split-Path $file -Leaf)" } else { 'no screenshot' }
-			Add-Summary "| $($build.Name) | $($scenario.Name) | $status |"
 			if (-not $process.HasExited) {
+				# dnSpy saves its settings when it's closed
 				$process.CloseMainWindow() | Out-Null
 				if (-not $process.WaitForExit(15000)) { try { $process.Kill() } catch { } }
+			}
+			$status += Test-SavedSettings $scenario $settings
+			Add-Summary "| $($build.Name) | $($scenario.Name) | $status |"
+			if ($scenario.ContainsKey('LegacySettings') -or -not $scenario.Language) {
+				Copy-Item $settings (Join-Path $shots "settings-$($build.Name)-$($scenario.Name).xml") -ErrorAction SilentlyContinue
 			}
 		}
 	}

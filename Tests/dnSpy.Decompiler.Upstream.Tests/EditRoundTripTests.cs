@@ -43,19 +43,12 @@ namespace dnSpy.Decompiler.Upstream.Tests {
 		// Upstream, and the code that the edit doesn't need is always left out of the decompiled image (dnSpy only
 		// does it for big types)
 		const string UpstreamStubs = "upstream-stubs";
-		const string Legacy = "legacy";
 
 		static IDecompiler GetDecompiler(string engine) {
-			if (engine == UpstreamStubs) {
-				var language = LanguageRunner.Create();
+			var language = LanguageRunner.Create();
+			if (engine == UpstreamStubs)
 				language.EditUnusedBodiesMinSize = 0;
-				return language;
-			}
-			if (engine != Legacy)
-				return LanguageRunner.Create();
-			// The legacy engine is a debug build here: its assertions would throw in the test host, not in dnSpy
-			System.Diagnostics.Trace.Listeners.Clear();
-			return LegacyDecompiler.CSharp;
+			return language;
 		}
 
 		static (string name, string source, string ns) GetProgram(string program) => program switch {
@@ -132,8 +125,7 @@ namespace dnSpy.Decompiler.Upstream.Tests {
 			}
 			if (check?.Invoke(module) is string problem)
 				return new Outcome { Category = "check", Description = $"{kind} {result.Target}: {problem}", Result = result };
-			// The members keep their nullable annotations ([NullableContext], [Nullable]). (The legacy engine doesn't show
-			// them: the importer keeps the original ones of the members whose signatures didn't change.)
+			// The members keep their nullable annotations ([NullableContext], [Nullable])
 			if (NullabilityOracle.Compare(compiled.Image, image) is { Count: > 0 } nullability)
 				return new Outcome { Category = "nullability", Description = $"{kind} {result.Target}: " + string.Join(" | ", nullability.Take(3)), Result = result };
 			// The edit dialog puts the caret on the edited member
@@ -346,7 +338,7 @@ namespace dnSpy.Decompiler.Upstream.Tests {
 		}
 
 		public static IEnumerable<object[]> ChangeCases() {
-			foreach (var engine in new[] { Upstream, UpstreamStubs, Legacy }) {
+			foreach (var engine in new[] { Upstream, UpstreamStubs }) {
 				foreach (var optimize in new[] { true, false }) {
 					// A new await (new state machine code), a new yield return, a new lambda, a constructor and a static
 					// constructor's code
@@ -390,8 +382,7 @@ namespace dnSpy.Decompiler.Upstream.Tests {
 			if (outcome is not null && dumpFailures)
 				Dump(outcome);
 			log.WriteLine($"{engine} {typeName}.{memberName}: {outcome?.Description ?? "OK"}");
-			if (engine != Legacy)
-				Assert.Null(outcome?.Description);
+			Assert.Null(outcome?.Description);
 		}
 
 		static IEnumerable<object[]> GetCases(params string[] engines) {
@@ -405,31 +396,28 @@ namespace dnSpy.Decompiler.Upstream.Tests {
 
 		// Edit Method and Add Class Members leave code out of the decompiled image, Edit Class and Edit Assembly
 		// Attributes don't
-		public static IEnumerable<object[]> Cases() => GetCases(Upstream, UpstreamStubs, Legacy);
-		public static IEnumerable<object[]> CasesWithAllCode() => GetCases(Upstream, Legacy);
+		public static IEnumerable<object[]> Cases() => GetCases(Upstream, UpstreamStubs);
+		public static IEnumerable<object[]> CasesWithAllCode() => GetCases(Upstream);
 
 		[Theory]
 		[MemberData(nameof(Cases))]
 		public void EditMethod_WithoutChanges_CompilesAndBehavesTheSame(string engine, string program, bool optimize) {
 			var failures = EditAll(program, optimize, engine, EditKind.EditMethod);
-			if (engine != Legacy)
-				AssertNoUnexpectedFailures(failures);
+			AssertNoUnexpectedFailures(failures);
 		}
 
 		[Theory]
 		[MemberData(nameof(CasesWithAllCode))]
 		public void EditClass_WithoutChanges_CompilesAndBehavesTheSame(string engine, string program, bool optimize) {
 			var failures = EditAll(program, optimize, engine, EditKind.EditClass);
-			if (engine != Legacy)
-				AssertNoUnexpectedFailures(failures);
+			AssertNoUnexpectedFailures(failures);
 		}
 
 		[Theory]
 		[MemberData(nameof(Cases))]
 		public void AddMembers_AddsTheNewMethod(string engine, string program, bool optimize) {
 			var failures = EditAll(program, optimize, engine, EditKind.AddMembers);
-			if (engine != Legacy)
-				AssertNoUnexpectedFailures(failures);
+			AssertNoUnexpectedFailures(failures);
 		}
 
 		/// <summary>
@@ -576,8 +564,7 @@ namespace dnSpy.Decompiler.Upstream.Tests {
 		[MemberData(nameof(CasesWithAllCode))]
 		public void EditAssembly_WithoutChanges_KeepsTheAttributes(string engine, string program, bool optimize) {
 			var failures = EditAll(program, optimize, engine, EditKind.EditAssembly);
-			if (engine != Legacy)
-				AssertNoUnexpectedFailures(failures);
+			AssertNoUnexpectedFailures(failures);
 		}
 	}
 }

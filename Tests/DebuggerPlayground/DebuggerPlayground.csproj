@@ -2,7 +2,7 @@
 
   <!--
     A small program to check dnSpy's debugger on decompiled code by hand (see README.md). Not part of dnSpy.sln:
-    build it on its own (dotnet build -c Release), open the .dll in dnSpy and debug it with "C# (ILSpy 11.2)".
+    build it on its own (dotnet build -c Release), open the .dll in dnSpy and debug it with "C#".
   -->
   <PropertyGroup>
     <OutputType>Exe</OutputType>

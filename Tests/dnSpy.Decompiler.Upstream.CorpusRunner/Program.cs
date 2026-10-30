@@ -30,10 +30,10 @@ using System.Threading.Tasks;
 namespace dnSpy.Decompiler.Upstream.CorpusRunner {
 	/// <summary>
 	/// Usage:
-	///   run --out DIR [--engines upstream,legacy] [--max-types N] [--jobs N] PATH...
+	///   run --out DIR [--engines upstream,dnspy] [--max-types N] [--jobs N] PATH...
 	///       Decompiles every assembly under PATH (files or directories) in child processes and writes
 	///       DIR/results.json and DIR/report.md
-	///   one --engine upstream|legacy --stack-mb N --max-types N --out FILE ASSEMBLY
+	///   one --engine upstream|dnspy --stack-mb N --max-types N --out FILE ASSEMBLY
 	///       (child process) Decompiles one assembly and writes FILE
 	///   generate --out DIR BASE_ASSEMBLY
 	///       Writes synthetic samples with obfuscator/anti-decompiler tricks
@@ -67,7 +67,7 @@ namespace dnSpy.Decompiler.Upstream.CorpusRunner {
 		static int Run(Options options) {
 			var outDir = Path.GetFullPath(options.Get("out"));
 			Directory.CreateDirectory(outDir);
-			var engines = options.Get("engines", "upstream,legacy").Split(',', StringSplitOptions.RemoveEmptyEntries);
+			var engines = options.Get("engines", "upstream").Split(',', StringSplitOptions.RemoveEmptyEntries);
 			int maxTypes = int.Parse(options.Get("max-types", "250"));
 			int jobs = int.Parse(options.Get("jobs", Environment.ProcessorCount.ToString()));
 			var files = options.Paths.SelectMany(EnumerateAssemblies).Distinct(StringComparer.Ordinal).OrderBy(a => a, StringComparer.Ordinal).ToList();

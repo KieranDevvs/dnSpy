@@ -30,7 +30,7 @@ using Xunit.Abstractions;
 
 namespace dnSpy.Decompiler.Upstream.Tests {
 	/// <summary>
-	/// "IL with C# (ILSpy 11.2)": dnSpy's IL with the upstream decompiler's C# statements above their IL instructions
+	/// "IL with C#": dnSpy's IL with the C# decompiler's statements above their IL instructions
 	/// </summary>
 	public class ILWithCSharpTests {
 		readonly ITestOutputHelper log;
@@ -38,16 +38,21 @@ namespace dnSpy.Decompiler.Upstream.Tests {
 
 		static IDecompiler Create(out IDecompiler csharp) {
 			csharp = LanguageRunner.Create();
-			return ILWithCSharpDecompiler.CreateUpstream(DecompilerSettingsService.__Instance_DONT_USE.ILDecompilerSettings, csharp);
+			return ILWithCSharpDecompiler.Create(DecompilerSettingsService.__Instance_DONT_USE.ILDecompilerSettings, csharp);
 		}
 
 		[Fact]
 		public void Identity() {
 			var decompiler = Create(out var csharp);
-			Assert.Equal("IL with " + csharp.UniqueNameUI, decompiler.UniqueNameUI);
-			Assert.StartsWith("IL with C# (ILSpy ", decompiler.UniqueNameUI, StringComparison.Ordinal);
+			// The names and GUIDs of the languages it replaced (saved tabs and settings keep them)
+			Assert.Equal("C#", csharp.UniqueNameUI);
+			Assert.Equal(DecompilerConstants.LANGUAGE_CSHARP_ILSPY, csharp.UniqueGuid);
+			Assert.Equal(DecompilerConstants.LANGUAGE_CSHARP, csharp.GenericGuid);
+			Assert.Equal(DecompilerConstants.CSHARP_ILSPY_ORDERUI, csharp.OrderUI);
+			Assert.Equal("IL with C#", decompiler.UniqueNameUI);
 			Assert.Equal(DecompilerConstants.LANGUAGE_IL, decompiler.GenericGuid);
-			Assert.NotEqual(DecompilerConstants.LANGUAGE_IL_WITH_CSHARP_ILSPY, decompiler.UniqueGuid);
+			Assert.Equal(DecompilerConstants.LANGUAGE_IL_WITH_CSHARP_ILSPY, decompiler.UniqueGuid);
+			Assert.Equal(DecompilerConstants.IL_WITH_CSHARP_ILSPY_ORDERUI, decompiler.OrderUI);
 			Assert.Equal(".il", decompiler.FileExtension);
 		}
 

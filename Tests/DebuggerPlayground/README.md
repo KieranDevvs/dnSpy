@@ -10,7 +10,7 @@ Linux, so this checklist is about what only the real debugger can show: the UI, 
 
 1. Build it: `dotnet build Tests\DebuggerPlayground -c Release` (also try `-c Debug` once; optimized code is the
    harder case). There's no PDB on purpose, so dnSpy uses the decompiler's debug info.
-2. In dnSpy, select the **C# (ILSpy 11.2)** language and open
+2. In dnSpy, select the **C#** language and open
    `Tests\DebuggerPlayground\bin\Release\net10.0\DebuggerPlayground.dll`.
 3. Debug → Start Debugging (F5) → Executable: the `DebuggerPlayground.exe` next to the dll. Set breakpoints in
    `DebuggerPlayground.Scenarios` before starting, or start with "Break at: Entry point".
@@ -34,7 +34,7 @@ Linux, so this checklist is about what only the real debugger can show: the UI, 
 | 13 | `Outer`/`Middle`/`Inner` | Break when `ArgumentException` is thrown, double-click the frames in the Call Stack | `Inner` highlights the `throw`, `Middle` highlights `list.ForEach(...)`, `Outer` its call |
 
 Also worth a look while stopped: the Locals window shouldn't list temporaries like `V_3` that aren't in the code,
-and switching the language to the legacy C# and back while stopped should keep the current statement highlighted.
+and switching the language to IL and back while stopped should keep the current statement highlighted.
 
 Known differences from a compiler PDB (the automated tests measure them):
 

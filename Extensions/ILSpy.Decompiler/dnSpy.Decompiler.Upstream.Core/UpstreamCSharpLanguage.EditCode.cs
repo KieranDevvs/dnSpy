@@ -269,7 +269,7 @@ namespace dnSpy.Decompiler.Upstream {
 		}
 
 		/// <summary>
-		/// The members of the main document (like dnSpy's other C# decompiler)
+		/// The members of the main document (like dnSpy's previous C# decompiler)
 		/// </summary>
 		sealed class EditSelection {
 			/// <summary>Members in the main document (a property or event with all its accessors)</summary>
@@ -566,7 +566,7 @@ namespace dnSpy.Decompiler.Upstream {
 
 		/// <summary>
 		/// Removes the assembly and module attributes that only the compiler may add (they don't compile), and for a
-		/// project's AssemblyInfo.cs also the ones the compiler or MSBuild adds (like dnSpy's other C# decompiler)
+		/// project's AssemblyInfo.cs also the ones the compiler or MSBuild adds (like dnSpy's previous C# decompiler)
 		/// </summary>
 		sealed class AssemblyInfoTransform : IAstTransform {
 			static readonly HashSet<string> addedByBuild = new HashSet<string>(StringComparer.Ordinal) {

@@ -27,9 +27,9 @@ Steps (`-Skip Build,Corpus` or `-Only Samples` to run some of them; `-Skip Build
 | Build | `dnSpy.sln` Debug and Release (.NET Framework 4.8 and .NET 10), the test projects, `DebuggerPlayground` |
 | Tests | The headless test suite (`Tests\dnSpy.Decompiler.Upstream.Tests`) on Windows |
 | Baml | BAML to XAML of dnSpy's own assemblies, the WPF framework (.NET 10) and .NET Framework WPF with its themes |
-| Corpus | Decompiles 13 .NET Framework 4.8 assemblies (mscorlib, WinForms, WPF, ...) with both engines (`CorpusRunner`) |
-| Samples | `Samples\*`: a console, a WPF, a WinForms and a .NET Framework app. Each is exported with `dnSpy.Console` (its .NET 10 and its .NET Framework build, both C# engines; SDK-style, and a classic project for .NET Framework), the exported project is built with MSBuild and run, and must print the same as the original |
-| Screenshots | Starts dnSpy (Debug, .NET 10 and .NET Framework) on "C# (ILSpy 11.2)", the legacy C#, "IL with C#", ILAst with the stepper and typed IL, and takes screenshots |
+| Corpus | Decompiles 13 .NET Framework 4.8 assemblies (mscorlib, WinForms, WPF, ...) (`CorpusRunner`) |
+| Samples | `Samples\*`: a console, a WPF, a WinForms and a .NET Framework app. Each is exported with `dnSpy.Console` (its .NET 10 and its .NET Framework build; SDK-style, and a classic project for .NET Framework), the exported project is built with MSBuild and run, and must print the same as the original |
+| Screenshots | Starts dnSpy (Debug, .NET 10 and .NET Framework) on "C#", "IL with C#", ILAst with the stepper and typed IL, and takes screenshots. Also checks that a new settings file starts on "C#", and that settings changed in the old C# decompiler are moved to the new one |
 
 ## Still manual
 

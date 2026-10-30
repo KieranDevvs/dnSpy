@@ -21,6 +21,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using dnlib.DotNet;
+using dnlib.DotNet.Emit;
 using dnSpy.Contracts.Decompiler;
 using dnSpy.Decompiler.Upstream.Tests.Infrastructure;
 using Xunit;
@@ -29,8 +30,7 @@ using Xunit.Abstractions;
 namespace dnSpy.Decompiler.Upstream.Tests {
 	/// <summary>
 	/// Checks the debug info the debugger consumes (statements, locals, async stepping) against the method's IL
-	/// and against what the C# compiler wrote to its PDB for the same IL, for the upstream engine and (as a
-	/// baseline) the legacy engine.
+	/// and against what the C# compiler wrote to its PDB for the same IL.
 	/// </summary>
 	public class DebugInfoTests {
 		readonly ITestOutputHelper log;
@@ -124,6 +124,22 @@ namespace dnSpy.Decompiler.Upstream.Tests {
 				log.WriteLine($"  [{run.Engine}] EXCEPTION {e}");
 		}
 
+		/// <summary>
+		/// The offset of the first instruction of a call's arguments: going back from the call until the instructions
+		/// have pushed all the values it pops
+		/// </summary>
+		static uint GetArgumentsStart(CilBody body, Instruction call) {
+			int index = body.Instructions.IndexOf(call);
+			call.CalculateStackUsage(out _, out int needed);
+			for (int i = index - 1; i >= 0 && needed > 0; i--) {
+				body.Instructions[i].CalculateStackUsage(out int pushes, out int pops);
+				needed += pops - pushes;
+				if (needed == 0)
+					return body.Instructions[i].Offset;
+			}
+			return uint.MaxValue;
+		}
+
 		[Theory]
 		[MemberData(nameof(Programs))]
 		public void DebugInfo_IsConsistentWithIL_AndTheCompilersPdb(string program, bool optimize) {
@@ -134,27 +150,37 @@ namespace dnSpy.Decompiler.Upstream.Tests {
 			var language = LanguageRunner.Create();
 			var source = GetSource(program);
 			var upstream = Run("upstream", compiled.Load(), pdb, source, t => LanguageRunner.DecompileType(language, t));
-			var legacy = Run("legacy", compiled.Load(), pdb, source, LegacyDecompiler.DecompileType);
 
 			Log(upstream);
-			Log(legacy);
 			log.WriteLine($"{program} ({(optimize ? "Release" : "Debug")})");
 			log.WriteLine("  " + upstream.Summary());
-			log.WriteLine("  " + legacy.Summary());
 
-			// Async builder field and SetResult offset: the legacy engine is the reference
+			// Async builder field and SetResult offset, as the C# compiler generates them: the state machine's
+			// '<>t__builder' field, and the first instruction of 'this.<>t__builder.SetResult(...)' in MoveNext, where
+			// the call's arguments start ('ldarg.0'). (Async iterators have neither.)
 			var asyncMismatches = new List<string>();
+			int asyncMethods = 0;
 			foreach (var kv in upstream.InfosByMethod) {
-				if (kv.Value.AsyncInfo is not { } up || !legacy.InfosByMethod.TryGetValue(kv.Key, out var legacyInfo) || legacyInfo.AsyncInfo is not { } old)
+				if (kv.Value.AsyncInfo is not { } up)
 					continue;
-				// Each engine has its own copy of the module: compare tokens
-				if (up.BuilderField?.MDToken != old.BuilderField?.MDToken)
-					asyncMismatches.Add($"{kv.Value.Method.FullName}: builder field {up.BuilderField} vs legacy {old.BuilderField}");
-				if (up.SetResultOffset != old.SetResultOffset)
-					asyncMismatches.Add($"{kv.Value.Method.FullName}: SetResult offset IL_{up.SetResultOffset:X4} vs legacy IL_{old.SetResultOffset:X4}");
+				var moveNext = kv.Value.Method;
+				var builder = moveNext.DeclaringType.Fields.FirstOrDefault(a => a.Name == "<>t__builder");
+				if (builder is null || builder.FieldType.TypeName.StartsWith("AsyncIteratorMethodBuilder", StringComparison.Ordinal))
+					continue;
+				asyncMethods++;
+				var setResultCalls = moveNext.Body.Instructions.Where(a => (a.OpCode.Code == Code.Call || a.OpCode.Code == Code.Callvirt) &&
+					a.Operand is IMethod m && m.Name == "SetResult" && m.DeclaringType?.FullName == builder.FieldType.FullName).ToList();
+				if (up.BuilderField?.MDToken != builder.MDToken)
+					asyncMismatches.Add($"{moveNext.FullName}: builder field {up.BuilderField}, expected {builder}");
+				var expectedOffsets = setResultCalls.Select(a => GetArgumentsStart(moveNext.Body, a)).ToList();
+				if (expectedOffsets.Count != 1 || up.SetResultOffset != expectedOffsets[0])
+					asyncMismatches.Add($"{moveNext.FullName}: SetResult offset IL_{up.SetResultOffset:X4}, expected {string.Join(", ", expectedOffsets.Select(a => $"IL_{a:X4}"))}");
 			}
+			log.WriteLine($"  async methods checked: {asyncMethods}");
 			foreach (var m in asyncMismatches)
 				log.WriteLine("  ASYNC MISMATCH " + m);
+			if (program == nameof(TestPrograms.StateMachines))
+				Assert.True(asyncMethods >= 3, asyncMethods.ToString());
 
 			Assert.Empty(upstream.Exceptions);
 			Assert.Empty(upstream.MissingDebugInfo);

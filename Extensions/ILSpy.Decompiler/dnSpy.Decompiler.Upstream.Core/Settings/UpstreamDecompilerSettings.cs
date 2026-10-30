@@ -302,7 +302,7 @@ namespace dnSpy.Decompiler.Upstream.Settings {
 		}
 
 		/// <summary>
-		/// The options dnSpy's other C# decompiler also has keep their GUIDs and names
+		/// The options dnSpy's previous C# decompiler also has keep their GUIDs and names
 		/// </summary>
 		static Dictionary<string, (Guid guid, string name)> GetKnownOptions() {
 			var dict = new Dictionary<string, (Guid, string)>(StringComparer.Ordinal);

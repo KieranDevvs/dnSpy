@@ -433,7 +433,7 @@ namespace dnSpy.Decompiler.Upstream.Tests {
 			// No resource keys or humanized names for the settings ILSpy has strings for
 			Assert.DoesNotContain(all, a => a.Description.StartsWith("DecompilerSettings.", StringComparison.Ordinal));
 			Assert.Equal("Decompile async methods", all.Single(a => a.Name == "AsyncAwait").Description);
-			// dnSpy's other C# decompiler's options keep their GUIDs (eg. the analyzer reads AnonymousMethods)
+			// dnSpy's previous C# decompiler's options keep their GUIDs (eg. the analyzer reads AnonymousMethods)
 			Assert.Equal(DecompilerOptionConstants.AnonymousMethods_GUID, all.Single(a => a.Name == "AnonymousMethods").Guid);
 			Assert.Equal(DecompilerOptionConstants.ShowXmlDocumentation_GUID, all.Single(a => a.Name == "ShowXmlDocumentation").Guid);
 			Assert.Equal(DecompilerOptionConstants.ShowTokenAndRvaComments_GUID, all.Single(a => a.Name == "ShowTokenAndRvaComments").Guid);

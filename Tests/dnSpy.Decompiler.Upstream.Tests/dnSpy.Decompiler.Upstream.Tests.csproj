@@ -17,7 +17,7 @@
     <SignAssembly>True</SignAssembly>
     <AssemblyOriginatorKeyFile>..\..\dnSpy.snk</AssemblyOriginatorKeyFile>
     <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
-    <!-- The legacy decompiler (baseline) references WPF projects; the code paths used here don't need WPF -->
+    <!-- dnSpy.AsmEditor and dnSpy.BamlDecompiler reference WPF projects; the code paths used here don't need WPF -->
     <DisableTransitiveFrameworkReferences>true</DisableTransitiveFrameworkReferences>
   </PropertyGroup>
 
@@ -27,7 +27,7 @@
     <ProjectReference Include="..\..\Extensions\dnSpy.AsmEditor\dnSpy.AsmEditor.csproj" />
     <!-- XAML of WPF assemblies (loaded by name at runtime like dnSpy.Console does) -->
     <ProjectReference Include="..\..\Extensions\dnSpy.BamlDecompiler\dnSpy.BamlDecompiler.csproj" />
-    <!-- Baseline for comparisons, remove with the legacy engine -->
+    <!-- "IL with C#" (dnSpy's IL disassembler) -->
     <ProjectReference Include="..\..\Extensions\ILSpy.Decompiler\dnSpy.Decompiler.ILSpy.Core\dnSpy.Decompiler.ILSpy.Core.csproj" />
   </ItemGroup>
 
@@ -45,7 +45,5 @@
     <!-- The program for checking the debugger by hand: the stepping tests run it too -->
     <None Include="..\DebuggerPlayground\Program.cs" Link="Samples\DebuggerPlayground.cs" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
-
-  <Import Project="..\..\Extensions\ILSpy.Decompiler\AliasLegacyDecompiler.targets" />
 
 </Project>

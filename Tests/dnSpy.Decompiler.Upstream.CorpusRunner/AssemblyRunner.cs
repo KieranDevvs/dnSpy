@@ -140,12 +140,11 @@ namespace dnSpy.Decompiler.Upstream.CorpusRunner {
 						outputErrors.AddRange(CheckOutput(output));
 						return (output.Text, output.DebugInfos.ToArray());
 					}
-					if (upstream is not null) {
-						var r = upstream.DecompileType(type, token);
-						repairs = r.DebugInfoRepairs;
-						return (r.Text, r.MethodDebugInfos);
-					}
-					return LegacyDecompiler.DecompileType(type, token);
+					if (upstream is null)
+						throw new InvalidOperationException("Unknown engine: " + engine);
+					var r = upstream.DecompileType(type, token);
+					repairs = r.DebugInfoRepairs;
+					return (r.Text, r.MethodDebugInfos);
 				});
 				double ms = sw.Elapsed.TotalMilliseconds;
 				result.TypeMs.Add(Math.Round(ms, 1));
