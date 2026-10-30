@@ -61,6 +61,7 @@ namespace dnSpy.Decompiler.Upstream.Tests {
 		static (string name, string source, string ns) GetProgram(string program) => program switch {
 			"Classic" => ("EditClassic", EditPrograms.Classic, "EditClassic"),
 			"Modern" => ("EditModern", EditPrograms.Modern, "EditModern"),
+			"Compat" => ("EditCompat", EditPrograms.Compat, "EditCompat"),
 			_ => throw new ArgumentException(program),
 		};
 
@@ -425,6 +426,52 @@ namespace dnSpy.Decompiler.Upstream.Tests {
 			var failures = EditAll(program, optimize, engine, EditKind.AddMembers);
 			if (engine != Legacy)
 				AssertNoUnexpectedFailures(failures);
+		}
+
+		/// <summary>
+		/// A library as compiled for an older framework (<see cref="EditPrograms.Compat"/>): edited code binds to the
+		/// library's own copies of newer types (not an ambiguity, CS0433) and to the attribute a source generator added
+		/// (CS0246), and may call [Experimental] APIs. The saved module still references the library's own types.
+		/// </summary>
+		[Theory]
+		[InlineData(false)]
+		[InlineData(true)]
+		public void EditCompat_OwnTypes_GeneratorAttributes_ExperimentalApis(bool optimize) {
+			var decompiler = GetDecompiler(Upstream);
+			var compiled = Compile("Compat", optimize);
+			var expected = RunImage(compiled.Image, "EditCompat");
+			Assert.False(expected.StartsWith("EXCEPTION") || expected.StartsWith("CRASH"), expected);
+			var module = compiled.Load();
+			var targets = new List<(EditKind kind, uint token, string name)>();
+			// (Not the generator's attribute class itself: the code would need [Embedded])
+			foreach (var type in module.Types.Where(a => a.Namespace == "EditCompat" && a.Name != "GeneratedMarkerAttribute")) {
+				targets.Add((EditKind.EditClass, type.MDToken.Raw, type.FullName));
+				foreach (var method in type.Methods.Where(a => a.HasBody && decompiler.ShowMember(a)))
+					targets.Add((EditKind.EditMethod, method.MDToken.Raw, method.FullName));
+			}
+			var failures = new List<string>();
+			foreach (var (kind, token, name) in targets) {
+				var outcome = RunEdit(decompiler, kind, compiled, "EditCompat", expected, token, check: CheckOwnTypesReferenced);
+				if (outcome is not null) {
+					failures.Add(outcome.Description);
+					if (dumpFailures)
+						Dump(outcome);
+				}
+			}
+			Report($"upstream Compat {(optimize ? "Release" : "Debug")}", targets.Count, failures.Select(a => new Outcome { Description = a, Category = "fail" }).ToList());
+			Assert.Empty(failures);
+		}
+
+		static readonly string[] compatOwnTypes = {
+			"System.Diagnostics.CodeAnalysis.NotNullWhenAttribute",
+			"System.Runtime.CompilerServices.IsExternalInit",
+			"System.Index",
+			"EditCompat.GeneratedMarkerAttribute",
+		};
+
+		static string? CheckOwnTypesReferenced(ModuleDef module) {
+			var refs = module.GetTypeRefs().Where(a => compatOwnTypes.Contains(a.FullName)).Select(a => a.FullName + " in " + a.DefinitionAssembly?.Name).ToList();
+			return refs.Count == 0 ? null : "references another assembly's copy: " + string.Join(", ", refs);
 		}
 
 		const string OldCSharpProgram = """

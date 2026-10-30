@@ -258,7 +258,7 @@ namespace dnSpy.Decompiler.Upstream.Tests.Infrastructure {
 
 		/// <summary>
 		/// RoslynLanguageCompiler: C# latest with the TRACE symbol, a netmodule (assembly for Edit Assembly), optimized,
-		/// unsafe code allowed (retried without it)
+		/// unsafe code allowed (retried without it), errors about [Experimental] APIs suppressed
 		/// </summary>
 		static (byte[] pe, byte[] pdb)? Compile(EditResult result, AssemblyNameInfo tempAssembly, List<MetadataReference> references, ModuleDef module) {
 			var parseOptions = new CSharpParseOptions(LanguageVersion.Latest, preprocessorSymbols: new[] { "TRACE" });
@@ -269,8 +269,15 @@ namespace dnSpy.Decompiler.Upstream.Tests.Infrastructure {
 				.WithAssemblyIdentityComparer(DesktopAssemblyIdentityComparer.Default);
 			if (tempAssembly.PublicKeyOrToken is PublicKey publicKey)
 				options = options.WithCryptoPublicKey(ImmutableArray.Create(publicKey.Data)).WithDelaySign(true);
-			var compilation = CSharpCompilation.Create(tempAssembly.Name, trees, references, options);
+			Compilation compilation = CSharpCompilation.Create(tempAssembly.Name, trees, references, options);
 			var emitted = Emit(compilation, out var errors);
+			// RoslynLanguageCompiler.SuppressExperimentalApiErrors
+			var experimentalIds = errors.Where(a => a.IsWarningAsError && a.Descriptor.CustomTags.Contains(WellKnownDiagnosticTags.CustomObsolete)).Select(a => a.Id).Distinct().ToArray();
+			if (emitted is null && experimentalIds.Length != 0) {
+				options = options.WithSpecificDiagnosticOptions(options.SpecificDiagnosticOptions.SetItems(experimentalIds.Select(a => new KeyValuePair<string, ReportDiagnostic>(a, ReportDiagnostic.Suppress))));
+				compilation = compilation.WithOptions(options);
+				emitted = Emit(compilation, out errors);
+			}
 			if (emitted is null) {
 				var noUnsafe = compilation.WithOptions(options.WithAllowUnsafe(false));
 				emitted = Emit(noUnsafe, out var errors2);

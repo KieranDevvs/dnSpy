@@ -411,6 +411,88 @@ namespace dnSpy.Decompiler.Upstream.Tests {
 		/// <summary>
 		/// C# 12-14 features (the legacy engine predates them)
 		/// </summary>
+		/// <summary>
+		/// A library as compiled for an older framework: its own copies of newer types, an attribute a source generator
+		/// added (other compilations don't see it) and a call of an API marked [Experimental]
+		/// </summary>
+		public const string Compat = """
+			using System;
+			using System.Diagnostics.CodeAnalysis;
+
+			namespace System.Diagnostics.CodeAnalysis {
+				[AttributeUsage(AttributeTargets.Parameter)]
+				internal sealed class NotNullWhenAttribute : Attribute {
+					public NotNullWhenAttribute(bool returnValue) => ReturnValue = returnValue;
+					public bool ReturnValue { get; }
+				}
+			}
+
+			namespace System.Runtime.CompilerServices {
+				internal static class IsExternalInit { }
+			}
+
+			namespace System {
+				internal readonly struct Index {
+					readonly int value;
+					public Index(int value, bool fromEnd = false) => this.value = fromEnd ? ~value : value;
+					public int Value => value < 0 ? ~value : value;
+					public bool IsFromEnd => value < 0;
+					public int GetOffset(int length) => IsFromEnd ? length - ~value : value;
+				}
+			}
+
+			namespace Microsoft.CodeAnalysis {
+				internal sealed class EmbeddedAttribute : Attribute { }
+			}
+
+			namespace EditCompat {
+				[Microsoft.CodeAnalysis.Embedded]
+				[AttributeUsage(AttributeTargets.Class | AttributeTargets.Method)]
+				internal sealed class GeneratedMarkerAttribute : Attribute {
+					public GeneratedMarkerAttribute(string name) => Name = name;
+					public string Name { get; }
+				}
+
+				public static class Preview {
+					[Experimental("COMPAT001")]
+					public static int Answer() => 42;
+				}
+
+				[GeneratedMarker("settings")]
+				public class Settings {
+					public string Name { get; init; } = "";
+				}
+
+				public static class Text {
+					public static bool TryGet(string? s, [NotNullWhen(true)] out string? value) {
+						value = s;
+						return s is not null;
+					}
+
+					public static char FromEnd(string s, int n) {
+						Index i = ^n;
+						return s[i];
+					}
+
+					[GeneratedMarker("calls")]
+					public static int CallsPreview() {
+			#pragma warning disable COMPAT001
+						return Preview.Answer();
+			#pragma warning restore COMPAT001
+					}
+				}
+
+				public static class Program {
+					public static string Run() {
+						var settings = new Settings { Name = "n" };
+						return (Text.TryGet("x", out var v) ? v : "") + Text.FromEnd("abc", 1) + settings.Name + Text.CallsPreview() +
+							typeof(Settings).GetCustomAttributes(typeof(GeneratedMarkerAttribute), false).Length +
+							typeof(Text).GetMethod("CallsPreview")!.GetCustomAttributes(typeof(GeneratedMarkerAttribute), false).Length;
+					}
+				}
+			}
+			""";
+
 		public const string Modern = """"
 			using System;
 			using System.Collections.Generic;

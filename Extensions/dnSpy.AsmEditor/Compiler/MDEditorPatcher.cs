@@ -32,6 +32,7 @@ namespace dnSpy.AsmEditor.Compiler {
 		UpdateTypeReferences			= 0x0000_0001,
 		AllowInternalAccess				= 0x0000_0002,
 		UpdateAssemblyRefVersions		= 0x0000_0004,
+		HideTypes						= 0x0000_0008,
 	}
 
 	unsafe struct MDEditorPatcher {
@@ -44,13 +45,16 @@ namespace dnSpy.AsmEditor.Compiler {
 		readonly MetadataEditor mdEditor;
 		readonly MDEditorPatcherOptions options;
 		readonly Func<AssemblyRef, Version?>? getResolvedVersion;
+		readonly List<TypeDef>? typesToHide;
 		uint tempAssemblyRefRid;
 
 		bool UpdateTypeReferences => (options & MDEditorPatcherOptions.UpdateTypeReferences) != 0;
 		bool AllowInternalAccess => (options & MDEditorPatcherOptions.AllowInternalAccess) != 0;
 		bool UpdateAssemblyRefVersions => (options & MDEditorPatcherOptions.UpdateAssemblyRefVersions) != 0;
+		bool HideTypes => (options & MDEditorPatcherOptions.HideTypes) != 0;
 
-		public MDEditorPatcher(RawModuleBytes moduleData, MetadataEditor mdEditor, IAssembly tempAssembly, TypeDef? nonNestedEditedType, MDEditorPatcherOptions options, Func<AssemblyRef, Version?>? getResolvedVersion = null) {
+		public MDEditorPatcher(RawModuleBytes moduleData, MetadataEditor mdEditor, IAssembly tempAssembly, TypeDef? nonNestedEditedType, MDEditorPatcherOptions options,
+			Func<AssemblyRef, Version?>? getResolvedVersion = null, List<TypeDef>? typesToHide = null) {
 			this.moduleData = moduleData;
 			peFile = (byte*)moduleData.Pointer;
 			this.tempAssembly = tempAssembly;
@@ -60,6 +64,7 @@ namespace dnSpy.AsmEditor.Compiler {
 			this.mdEditor = mdEditor;
 			this.options = options;
 			this.getResolvedVersion = getResolvedVersion;
+			this.typesToHide = typesToHide;
 			tempAssemblyRefRid = 0;
 		}
 
@@ -76,11 +81,99 @@ namespace dnSpy.AsmEditor.Compiler {
 				PatchTypeRefsToEditedType(nonNestedEditedType);
 				PatchTypeTokenReferences(nonNestedEditedType);
 			}
-			if (AllowInternalAccess)
+			if (AllowInternalAccess) {
 				AddInternalsVisibleToAttribute();
+				MakeGeneratorEmbeddedTypesVisible(module);
+			}
 			if (UpdateAssemblyRefVersions && getResolvedVersion is not null)
 				UpdateAssemblyRefVersionsCore(module, getResolvedVersion);
+			if (HideTypes && typesToHide is not null)
+				HideTypesCore(typesToHide);
 		}
+
+		/// <summary>
+		/// Types that the edited module also defines (see <see cref="CompilerVisibleTypes.GetClashingTypes"/>) become
+		/// internal in this copy: the edited code sees only the edited module's own type, like the original code did,
+		/// instead of two types the compiler reports as ambiguous (CS0433)
+		/// </summary>
+		void HideTypesCore(List<TypeDef> types) {
+			foreach (var type in types) {
+				if (type.Rid == 0 || type.DeclaringType is not null)
+					continue;
+				var row = mdEditor.TablesHeap.TypeDefTable.Get(type.Rid);
+				var newRow = new RawTypeDefRow(row.Flags & ~(uint)TypeAttributes.VisibilityMask, row.Name, row.Namespace, row.Extends, row.FieldList, row.MethodList);
+				mdEditor.TablesHeap.TypeDefTable.Set(type.Rid, ref newRow);
+			}
+		}
+
+		/// <summary>
+		/// The compiler doesn't see the types of other assemblies that are marked [Microsoft.CodeAnalysis.Embedded], but
+		/// the decompiled code uses the ones a source generator added (e.g. ILSpy's [DecompilerAstNode]). Their
+		/// [Embedded] becomes [CompilerGenerated] in this copy. (See <see cref="CompilerVisibleTypes.IsEmbeddedByGenerator"/>.)
+		/// </summary>
+		void MakeGeneratorEmbeddedTypesVisible(ModuleDef module) {
+			uint ctorRid = 0;
+			var md = mdEditor.RealMetadata;
+			foreach (var type in module.GetTypes()) {
+				if (type.Rid == 0 || !CompilerVisibleTypes.IsEmbeddedByGenerator(type))
+					continue;
+				var caRids = md.GetCustomAttributeRidList(Table.TypeDef, type.Rid);
+				for (int i = 0; i < caRids.Count; i++) {
+					uint caRid = caRids[i];
+					if (!md.TablesStream.TryReadCustomAttributeRow(caRid, out var row) || !IsEmbeddedAttributeCtor(md, row.Type))
+						continue;
+					if (ctorRid == 0 && !TryCreateCompilerGeneratedAttributeCtor(out ctorRid))
+						return;
+					var newRow = new RawCustomAttributeRow(row.Parent, CodedToken.CustomAttributeType.Encode(new MDToken(Table.MemberRef, ctorRid)), row.Value);
+					mdEditor.TablesHeap.CustomAttributeTable.Set(caRid, ref newRow);
+				}
+			}
+		}
+
+		static bool IsEmbeddedAttributeCtor(Metadata md, uint customAttributeType) {
+			if (!CodedToken.CustomAttributeType.Decode(customAttributeType, out MDToken ctor))
+				return false;
+			uint typeNamespace, typeName;
+			if (ctor.Table == Table.MemberRef) {
+				if (!md.TablesStream.TryReadMemberRefRow(ctor.Rid, out var memberRef) || !CodedToken.MemberRefParent.Decode(memberRef.Class, out MDToken parent))
+					return false;
+				if (parent.Table == Table.TypeRef && md.TablesStream.TryReadTypeRefRow(parent.Rid, out var typeRef)) {
+					typeNamespace = typeRef.Namespace;
+					typeName = typeRef.Name;
+				}
+				else if (parent.Table == Table.TypeDef && md.TablesStream.TryReadTypeDefRow(parent.Rid, out var typeDef)) {
+					typeNamespace = typeDef.Namespace;
+					typeName = typeDef.Name;
+				}
+				else
+					return false;
+			}
+			else if (ctor.Table == Table.Method) {
+				if (!md.TablesStream.TryReadTypeDefRow(md.GetOwnerTypeOfMethod(ctor.Rid), out var typeDef))
+					return false;
+				typeNamespace = typeDef.Namespace;
+				typeName = typeDef.Name;
+			}
+			else
+				return false;
+			return md.StringsStream.ReadNoNull(typeName) == "EmbeddedAttribute" && md.StringsStream.ReadNoNull(typeNamespace) == "Microsoft.CodeAnalysis";
+		}
+
+		bool TryCreateCompilerGeneratedAttributeCtor(out uint ctorRid) {
+			ctorRid = 0;
+			if (!GetCorLibToken(out var corlibToken) || !CodedToken.ResolutionScope.Encode(corlibToken, out uint corlibEncodedToken))
+				return false;
+			uint typeRefRid = mdEditor.TablesHeap.TypeRefTable.Create();
+			var typeRefRow = new RawTypeRefRow(corlibEncodedToken, mdEditor.StringsHeap.Create("CompilerGeneratedAttribute"), mdEditor.StringsHeap.Create("System.Runtime.CompilerServices"));
+			mdEditor.TablesHeap.TypeRefTable.Set(typeRefRid, ref typeRefRow);
+			ctorRid = mdEditor.TablesHeap.MemberRefTable.Create();
+			var ctorRow = new RawMemberRefRow(CodedToken.MemberRefParent.Encode(new MDToken(Table.TypeRef, typeRefRid)),
+				mdEditor.StringsHeap.Create(".ctor"), mdEditor.BlobHeap.Create(defaultCtorSigBlob));
+			mdEditor.TablesHeap.MemberRefTable.Set(ctorRid, ref ctorRow);
+			return true;
+		}
+		// instance void .ctor()
+		static readonly byte[] defaultCtorSigBlob = new byte[] { 0x20, 0x00, 0x01 };
 
 		/// <summary>
 		/// A reference to an older version than the compiler gets (e.g. netstandard 2.0 when it gets 2.1) is one it has

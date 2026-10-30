@@ -79,6 +79,12 @@ namespace dnSpy.AsmEditor.Compiler {
 			}
 		}
 
+		List<TypeDef> GetClashingTypes(ModuleDef module) {
+			editedModuleTypeNames ??= CompilerVisibleTypes.GetTypeNames(editedModule);
+			return CompilerVisibleTypes.GetClashingTypes(module, editedModuleTypeNames);
+		}
+		HashSet<string>? editedModuleTypeNames;
+
 		public CompilerMetadataReference? Create(AssemblyDef asm) => Save(CreateRef(asm.ManifestModule));
 		public CompilerMetadataReference? Create(ModuleDef module) => Save(CreateRef(module));
 
@@ -92,7 +98,7 @@ namespace dnSpy.AsmEditor.Compiler {
 				if (!moduleData.IsFileLayout)
 					return default;
 
-				var patcher = new ModulePatcher(moduleData, moduleData.IsFileLayout, tempAssembly, editedModule, nonNestedEditedType, GetResolvedVersion);
+				var patcher = new ModulePatcher(moduleData, moduleData.IsFileLayout, tempAssembly, editedModule, nonNestedEditedType, GetResolvedVersion, GetClashingTypes);
 				if (!patcher.Patch(module, out var newModuleData))
 					return default;
 				if (moduleData != newModuleData) {
