@@ -80,10 +80,33 @@ namespace dnSpy.AsmEditor.Compiler {
 		}
 
 		List<TypeDef> GetClashingTypes(ModuleDef module) {
-			editedModuleTypeNames ??= CompilerVisibleTypes.GetTypeNames(editedModule);
+			editedModuleTypeNames ??= CompilerVisibleTypes.GetTypeNames(editedModule, GetModulesWithInternalAccess());
 			return CompilerVisibleTypes.GetClashingTypes(module, editedModuleTypeNames);
 		}
 		HashSet<string>? editedModuleTypeNames;
+
+		/// <summary>
+		/// The referenced modules whose internal types the edited module can use (they get the same access as it does)
+		/// </summary>
+		List<ModuleDef> GetModulesWithInternalAccess() {
+			var modules = new List<ModuleDef>();
+			foreach (var asmRef in editedModule.GetAssemblyRefs()) {
+				AssemblyDef? asm;
+				try {
+					asm = assemblyResolver.Resolve(asmRef, editedModule);
+				}
+				catch (Exception ex) when (ex is not OutOfMemoryException) {
+					continue;
+				}
+				if (asm is null)
+					continue;
+				foreach (var module in asm.Modules) {
+					if (module != editedModule && MDPatcherUtils.HasModuleInternalAccess(module, editedModule))
+						modules.Add(module);
+				}
+			}
+			return modules;
+		}
 
 		public CompilerMetadataReference? Create(AssemblyDef asm) => Save(CreateRef(asm.ManifestModule));
 		public CompilerMetadataReference? Create(ModuleDef module) => Save(CreateRef(module));

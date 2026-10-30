@@ -34,8 +34,8 @@ namespace dnSpy.AsmEditor.Compiler {
 		readonly Func<ModuleDef, List<TypeDef>>? getClashingTypes;
 
 		/// <param name="getResolvedVersion">Version of the assembly that the compiler gets for a reference, or null</param>
-		/// <param name="getClashingTypes">Public types of a module that the edited module also defines (see
-		/// <see cref="CompilerVisibleTypes.GetClashingTypes"/>), or null</param>
+		/// <param name="getClashingTypes">Public types of a module that clash with the edited module's own or friend types
+		/// (see <see cref="CompilerVisibleTypes.GetClashingTypes"/>), or null</param>
 		public ModulePatcher(RawModuleBytes moduleData, bool isFileLayout, IAssembly tempAssembly, ModuleDef editedModule, TypeDef? nonNestedEditedType,
 			Func<AssemblyRef, Version?>? getResolvedVersion = null, Func<ModuleDef, List<TypeDef>>? getClashingTypes = null) {
 			this.moduleData = moduleData;
@@ -58,7 +58,8 @@ namespace dnSpy.AsmEditor.Compiler {
 				MDPatcherUtils.ReferencesModule(module, nonNestedEditedType?.Module) &&
 				!module.Assembly.IsCorLib();
 			bool addIVT = module == editedModule || MDPatcherUtils.HasModuleInternalAccess(module, editedModule);
-			var clashingTypes = module == editedModule ? null : getClashingTypes?.Invoke(module);
+			// (The edited code sees all internal types of the modules it has internal access to)
+			var clashingTypes = addIVT ? null : getClashingTypes?.Invoke(module);
 			bool hideTypes = clashingTypes is not null && clashingTypes.Count != 0;
 			if (fixTypeDefRefs || addIVT || hideTypes) {
 				DnSpyEventSource.Log.EditCodePatchModuleStart(module.Location);

@@ -44,23 +44,32 @@ namespace dnSpy.AsmEditor.Compiler {
 			(type.CustomAttributes.IsDefined(EmbeddedAttribute) && type.CustomAttributes.IsDefined(CompilerGeneratedAttribute));
 
 		/// <summary>
-		/// Full names of the edited module's top-level types that the edited code sees (it gets access to internal types)
+		/// Full names of the top-level types that the edited code sees and that the original code used instead of a
+		/// framework's: the edited module's types, and the internal types of the modules it has internal access to (e.g.
+		/// Microsoft.CodeAnalysis.CSharp uses Microsoft.CodeAnalysis's internal NotNullWhenAttribute)
 		/// </summary>
-		public static HashSet<string> GetTypeNames(ModuleDef editedModule) {
+		public static HashSet<string> GetTypeNames(ModuleDef editedModule, IEnumerable<ModuleDef> modulesWithInternalAccess) {
 			var names = new HashSet<string>(StringComparer.Ordinal);
-			foreach (var type in editedModule.Types) {
-				if (type.IsGlobalModuleType || type.Name.StartsWith("<") || IsEmbeddedByCompiler(type))
-					continue;
-				names.Add(type.FullName);
-			}
+			AddTypeNames(names, editedModule, onlyInternal: false);
+			foreach (var module in modulesWithInternalAccess)
+				AddTypeNames(names, module, onlyInternal: true);
 			return names;
 		}
 
+		static void AddTypeNames(HashSet<string> names, ModuleDef module, bool onlyInternal) {
+			foreach (var type in module.Types) {
+				if (type.IsGlobalModuleType || type.Name.StartsWith("<") || IsEmbeddedByCompiler(type) || (onlyInternal && type.IsPublic))
+					continue;
+				names.Add(type.FullName);
+			}
+		}
+
 		/// <summary>
-		/// Public top-level types of <paramref name="module"/> that the edited module also defines, typically its own
-		/// internal copy of a type that's newer than the framework it targets (NotNullWhenAttribute, IsExternalInit,
-		/// System.Index). The compiler would see both and report them as ambiguous (CS0433); the original compiler
-		/// used the module's own type.
+		/// Public top-level types of <paramref name="module"/> with the same name as one of <see cref="GetTypeNames"/>,
+		/// typically the framework's version of a type that the edited module (or a module whose internals it uses) has
+		/// its own internal copy of because it targets an older framework (NotNullWhenAttribute, IsExternalInit,
+		/// System.Index). The compiler would see both and report them as ambiguous (CS0433); the original compiler used
+		/// the library's copy.
 		/// </summary>
 		public static List<TypeDef> GetClashingTypes(ModuleDef module, HashSet<string> editedModuleTypeNames) {
 			var types = new List<TypeDef>();
