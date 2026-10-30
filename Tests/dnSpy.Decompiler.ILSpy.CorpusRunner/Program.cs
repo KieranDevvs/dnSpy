@@ -30,11 +30,15 @@ using System.Threading.Tasks;
 namespace dnSpy.Decompiler.ILSpy.CorpusRunner {
 	/// <summary>
 	/// Usage:
-	///   run --out DIR [--engines upstream,dnspy] [--max-types N] [--jobs N] PATH...
+	///   run --out DIR [--engines upstream,dnspy] [--max-types N] [--jobs N] [--dump DIR] PATH...
 	///       Decompiles every assembly under PATH (files or directories) in child processes and writes
-	///       DIR/results.json and DIR/report.md
-	///   one --engine upstream|dnspy --stack-mb N --max-types N --out FILE ASSEMBLY
+	///       DIR/results.json and DIR/report.md. --dump writes each type's output to DIR/ASSEMBLY/TYPE.cs (one engine).
+	///   one --engine upstream|dnspy --stack-mb N --max-types N --out FILE [--dump DIR] ASSEMBLY
 	///       (child process) Decompiles one assembly and writes FILE
+	///   compare --head DIR [--base DIR] --out FILE
+	///       Compares two runs (results and dumps) and writes a Markdown summary. Exit code 1 if the head run is worse
+	///       (crashes, load errors, exceptions, timeouts, fewer types decompiled, more debug info errors), or without
+	///       a base run, if it has crashes.
 	///   generate --out DIR BASE_ASSEMBLY
 	///       Writes synthetic samples with obfuscator/anti-decompiler tricks
 	/// </summary>
@@ -51,6 +55,7 @@ namespace dnSpy.Decompiler.ILSpy.CorpusRunner {
 					"one" => AssemblyRunner.Run(options),
 					"generate" => SampleGenerator.Generate(options.Get("out"), options.Paths.Single()),
 					"inspect" => Inspect.Run(options),
+					"compare" => Compare.Run(options),
 					"bridge-bench" => BridgeBenchmark.Run(options),
 					_ => throw new ArgumentException($"Unknown command '{args[0]}'"),
 				};
@@ -70,6 +75,9 @@ namespace dnSpy.Decompiler.ILSpy.CorpusRunner {
 			var engines = options.Get("engines", "upstream").Split(',', StringSplitOptions.RemoveEmptyEntries);
 			int maxTypes = int.Parse(options.Get("max-types", "250"));
 			int jobs = int.Parse(options.Get("jobs", Environment.ProcessorCount.ToString()));
+			var dump = options.Get("dump", "");
+			if (dump.Length != 0 && engines.Length != 1)
+				throw new ArgumentException("--dump needs one engine");
 			var files = options.Paths.SelectMany(EnumerateAssemblies).Distinct(StringComparer.Ordinal).OrderBy(a => a, StringComparer.Ordinal).ToList();
 			Console.WriteLine($"{files.Count} assemblies, engines: {string.Join(", ", engines)}, max types per assembly: {maxTypes}");
 
@@ -78,10 +86,10 @@ namespace dnSpy.Decompiler.ILSpy.CorpusRunner {
 			int done = 0;
 			var work = files.SelectMany(f => engines.Select(e => (file: f, engine: e))).ToList();
 			Parallel.ForEach(work, new ParallelOptions { MaxDegreeOfParallelism = jobs }, item => {
-				var result = RunChild(item.file, item.engine, DefaultStackMB, maxTypes, outDir);
+				var result = RunChild(item.file, item.engine, DefaultStackMB, maxTypes, outDir, dump);
 				if (result.Crashed) {
 					// Can't be caught in-process (e.g. stack overflow): retry with a big stack to see if that's enough
-					var retry = RunChild(item.file, item.engine, BigStackMB, maxTypes, outDir);
+					var retry = RunChild(item.file, item.engine, BigStackMB, maxTypes, outDir, dump);
 					retry.CrashedWithDefaultStack = true;
 					retry.DefaultStackCrashDetail = result.CrashDetail;
 					result = retry;
@@ -101,7 +109,7 @@ namespace dnSpy.Decompiler.ILSpy.CorpusRunner {
 			return 0;
 		}
 
-		static AssemblyResult RunChild(string file, string engine, int stackMB, int maxTypes, string outDir) {
+		static AssemblyResult RunChild(string file, string engine, int stackMB, int maxTypes, string outDir, string dump) {
 			var resultFile = Path.Combine(outDir, "tmp", Guid.NewGuid().ToString("N") + ".json");
 			Directory.CreateDirectory(Path.GetDirectoryName(resultFile)!);
 			var psi = new ProcessStartInfo("dotnet") {
@@ -110,8 +118,13 @@ namespace dnSpy.Decompiler.ILSpy.CorpusRunner {
 				UseShellExecute = false,
 			};
 			psi.ArgumentList.Add(typeof(Program).Assembly.Location);
-			foreach (var a in new[] { "one", "--engine", engine, "--stack-mb", stackMB.ToString(), "--max-types", maxTypes.ToString(), "--out", resultFile, file })
+			foreach (var a in new[] { "one", "--engine", engine, "--stack-mb", stackMB.ToString(), "--max-types", maxTypes.ToString(), "--out", resultFile })
 				psi.ArgumentList.Add(a);
+			if (dump.Length != 0) {
+				psi.ArgumentList.Add("--dump");
+				psi.ArgumentList.Add(Path.GetFullPath(dump));
+			}
+			psi.ArgumentList.Add(file);
 			using var process = Process.Start(psi)!;
 			var stderr = new StringBuilder();
 			process.ErrorDataReceived += (s, e) => { if (e.Data is not null) lock (stderr) stderr.AppendLine(e.Data); };

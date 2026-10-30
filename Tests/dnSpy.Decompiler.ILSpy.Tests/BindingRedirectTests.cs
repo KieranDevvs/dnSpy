@@ -33,8 +33,9 @@ namespace dnSpy.Decompiler.ILSpy.Tests {
 	/// (Mono ignores the version) and the code that uses it fails, e.g. the ILSpy package references
 	/// System.Runtime.CompilerServices.Unsafe 6.0.0.0 and dnSpy ships 6.0.3.0. (dnSpy.exe's config gets the redirects
 	/// the build finds, dnSpy.Console.exe loads the decompiler at runtime so the build can't find them and they're in
-	/// app.config.) Checks the net48 build output when it's there, so it catches package updates that need app.config
-	/// updates.
+	/// app.config.) And every binding redirect is to the version dnSpy ships (a Roslyn update needs new redirects for
+	/// extensions built against an older Roslyn). Checks the net48 build output when it's there (CI builds it), so it
+	/// catches package updates that need app.config updates.
 	/// </summary>
 	public class BindingRedirectTests {
 		readonly ITestOutputHelper log;
@@ -65,17 +66,28 @@ namespace dnSpy.Decompiler.ILSpy.Tests {
 			var binDir = Path.Combine(root!, "dnSpy", "dnSpy", "bin");
 			var outputDirs = new[] { "Debug", "Release" }.Select(a => Path.Combine(binDir, a, "net48")).Where(Directory.Exists).ToList();
 			var problems = new List<string>();
+			var assembliesByDir = new Dictionary<string, List<AssemblyInfo>>(StringComparer.Ordinal);
 			int checkedExes = 0;
 			foreach (var dir in outputDirs) {
-				// The assemblies in the exe's directory (not the debugger's processes' in the subdirectories)
-				var assemblies = ReadAssemblies(dir).ToDictionary(a => a.Name, StringComparer.OrdinalIgnoreCase);
 				foreach (var (exe, loaded) in processes) {
 					var exePath = Path.Combine(dir, exe);
 					if (!File.Exists(exePath) || !File.Exists(exePath + ".config"))
 						continue;
 					checkedExes++;
-					var redirects = ReadRedirects(exePath + ".config");
-					var roots = new[] { exe }.Concat(loaded.SelectMany(a => Directory.GetFiles(dir, a)).Select(Path.GetFileName));
+					var config = ReadConfig(exePath + ".config");
+					var redirects = config.redirects;
+					var where = $"{exe} ({Path.GetFileName(Path.GetDirectoryName(dir))})";
+					// The assemblies in the exe's directory and its probing paths (build.ps1 moves them to 'bin'), not the
+					// debugger's processes' in the other subdirectories
+					var dirs = new[] { dir }.Concat(config.probingPaths.Select(a => Path.Combine(dir, a))).Where(Directory.Exists).ToList();
+					var assemblies = new Dictionary<string, AssemblyInfo>(StringComparer.OrdinalIgnoreCase);
+					foreach (var d in dirs) {
+						if (!assembliesByDir.TryGetValue(d, out var list))
+							assembliesByDir.Add(d, list = ReadAssemblies(d));
+						foreach (var a in list)
+							assemblies.TryAdd(a.Name, a);
+					}
+					var roots = new[] { exe }.Concat(dirs.SelectMany(d => loaded.SelectMany(a => Directory.GetFiles(d, a))).Select(Path.GetFileName));
 					var closure = GetClosure(assemblies, roots.Select(a => assemblies.Values.FirstOrDefault(b => StringComparer.OrdinalIgnoreCase.Equals(Path.GetFileName(b.File), a))));
 					log.WriteLine($"{exePath}: {closure.Count} assemblies, {redirects.Count} binding redirects");
 					foreach (var asm in closure) {
@@ -85,15 +97,22 @@ namespace dnSpy.Decompiler.ILSpy.Tests {
 							if (redirects.TryGetValue(reference.Name, out var redirect) && redirect.OldMin <= reference.Version &&
 								reference.Version <= redirect.OldMax && redirect.NewVersion == target.Version)
 								continue;
-							problems.Add($"{exe} ({Path.GetFileName(Path.GetDirectoryName(Path.GetDirectoryName(exePath)))}): {Path.GetFileName(asm.File)} references {reference.Name} {reference.Version}, the {Path.GetFileName(target.File)} next to it is {target.Version}" +
+							problems.Add($"{where}: {Path.GetFileName(asm.File)} references {reference.Name} {reference.Version}, the {Path.GetFileName(target.File)} dnSpy ships is {target.Version}" +
 								(redirect is null ? ", no binding redirect" : $", binding redirect {redirect.OldMin}-{redirect.OldMax} -> {redirect.NewVersion}"));
 						}
+					}
+					// A redirect to another version than the one dnSpy ships, e.g. after a Roslyn update: dnSpy's own
+					// assemblies reference the new version, but extensions and scripts built against an older one can't
+					// load it
+					foreach (var (name, redirect) in redirects) {
+						if (assemblies.TryGetValue(name, out var target) && redirect.NewVersion != target.Version)
+							problems.Add($"{where}: binding redirect {name} {redirect.OldMin}-{redirect.OldMax} -> {redirect.NewVersion}, the {Path.GetFileName(target.File)} dnSpy ships is {target.Version}");
 					}
 				}
 			}
 			if (checkedExes == 0)
 				log.WriteLine("No net48 build output in " + binDir);
-			Assert.True(problems.Count == 0, "Add the binding redirects to dnSpy/dnSpy/app.config:" + Environment.NewLine + string.Join(Environment.NewLine, problems.Distinct()));
+			Assert.True(problems.Count == 0, "Update the binding redirects in dnSpy/dnSpy/app.config:" + Environment.NewLine + string.Join(Environment.NewLine, problems.Distinct()));
 		}
 
 		static List<AssemblyInfo> GetClosure(Dictionary<string, AssemblyInfo> assemblies, IEnumerable<AssemblyInfo?> roots) {
@@ -117,9 +136,10 @@ namespace dnSpy.Decompiler.ILSpy.Tests {
 		sealed record AssemblyReference(string Name, Version Version);
 		sealed record AssemblyInfo(string File, string Name, Version Version, List<AssemblyReference> References);
 
-		static Dictionary<string, Redirect> ReadRedirects(string configFile) {
+		static (Dictionary<string, Redirect> redirects, List<string> probingPaths) ReadConfig(string configFile) {
 			var result = new Dictionary<string, Redirect>(StringComparer.OrdinalIgnoreCase);
-			foreach (var dependentAssembly in XDocument.Load(configFile).Descendants().Where(a => a.Name.LocalName == "dependentAssembly")) {
+			var doc = XDocument.Load(configFile);
+			foreach (var dependentAssembly in doc.Descendants().Where(a => a.Name.LocalName == "dependentAssembly")) {
 				var name = dependentAssembly.Elements().FirstOrDefault(a => a.Name.LocalName == "assemblyIdentity")?.Attribute("name")?.Value;
 				var redirect = dependentAssembly.Elements().FirstOrDefault(a => a.Name.LocalName == "bindingRedirect");
 				var oldVersion = redirect?.Attribute("oldVersion")?.Value.Split('-');
@@ -128,7 +148,10 @@ namespace dnSpy.Decompiler.ILSpy.Tests {
 					continue;
 				result[name] = new Redirect(Version.Parse(oldVersion[0]), Version.Parse(oldVersion[oldVersion.Length - 1]), Version.Parse(newVersion));
 			}
-			return result;
+			// <probing privatePath="bin"/>
+			var probingPaths = doc.Descendants().Where(a => a.Name.LocalName == "probing")
+				.SelectMany(a => (a.Attribute("privatePath")?.Value ?? "").Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)).ToList();
+			return (result, probingPaths);
 		}
 
 		static List<AssemblyInfo> ReadAssemblies(string dir) {

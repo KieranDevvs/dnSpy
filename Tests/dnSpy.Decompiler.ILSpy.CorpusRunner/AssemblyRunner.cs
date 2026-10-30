@@ -105,6 +105,7 @@ namespace dnSpy.Decompiler.ILSpy.CorpusRunner {
 			var allTypes = module.Types.Where(t => !t.IsGlobalModuleType).ToList();
 			result.TotalTypes = allTypes.Count;
 			var types = Sample(allTypes, maxTypes);
+			var dump = OutputDump.Create(options.Get("dump", ""), file);
 
 			UpstreamCSharpDecompiler? upstream = null;
 			// "dnspy": the IDecompiler dnSpy uses (dnSpy's output, colors, references, braces, token comments)
@@ -153,6 +154,11 @@ namespace dnSpy.Decompiler.ILSpy.CorpusRunner {
 					result.MaxTypeMs = ms;
 					result.MaxType = SafeName(type);
 				}
+				dump?.Write(type, outcome.kind switch {
+					OutcomeKind.Ok => outcome.value.text,
+					OutcomeKind.Timeout => "// TIMEOUT\n",
+					_ => $"// EXCEPTION: {outcome.exception!.GetType().Name}: {FirstLine(outcome.exception.Message)}\n",
+				});
 				switch (outcome.kind) {
 				case OutcomeKind.Ok:
 					result.Ok++;
@@ -292,5 +298,10 @@ namespace dnSpy.Decompiler.ILSpy.CorpusRunner {
 		}
 
 		static string Truncate(string s, int max) => s.Length <= max ? s : s.Substring(0, max) + "...";
+
+		static string FirstLine(string s) {
+			int i = s.IndexOfAny(new[] { '\r', '\n' });
+			return i < 0 ? s : s.Substring(0, i);
+		}
 	}
 }
