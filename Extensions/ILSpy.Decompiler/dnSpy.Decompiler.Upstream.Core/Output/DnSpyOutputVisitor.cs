@@ -51,6 +51,20 @@ namespace dnSpy.Decompiler.Upstream.Output {
 			EndNode(directionExpression);
 		}
 
+		/// <summary>
+		/// C# 12 collection expressions ('[a, b, ..c]', <see cref="CollectionExpressionTransform"/>), which upstream
+		/// 11.2 doesn't have
+		/// </summary>
+		public override void VisitArrayInitializerExpression(ArrayInitializerExpression arrayInitializerExpression) {
+			if (arrayInitializerExpression.Annotation<CollectionExpressionAnnotation>() is null) {
+				base.VisitArrayInitializerExpression(arrayInitializerExpression);
+				return;
+			}
+			StartNode(arrayInitializerExpression);
+			WriteCommaSeparatedListInBrackets(arrayInitializerExpression.Elements);
+			EndNode(arrayInitializerExpression);
+		}
+
 		public override void VisitMethodDeclaration(MethodDeclaration methodDeclaration) {
 			if (methodDeclaration.Annotation<CompoundAssignmentOperatorAnnotation>() is not CompoundAssignmentOperatorAnnotation op) {
 				base.VisitMethodDeclaration(methodDeclaration);

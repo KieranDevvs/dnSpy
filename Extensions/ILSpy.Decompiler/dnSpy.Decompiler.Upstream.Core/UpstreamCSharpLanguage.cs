@@ -310,8 +310,12 @@ namespace dnSpy.Decompiler.Upstream {
 					decompiler.DebugInfoProvider = DnlibDebugInfoProvider.TryCreate(bridged);
 				// (Before the using declarations are added: it references a type)
 				int initializers = decompiler.AstTransforms.IndexOf(decompiler.AstTransforms.OfType<TransformFieldAndConstructorInitializers>().FirstOrDefault()!);
-				if (initializers >= 0)
+				if (initializers >= 0) {
 					decompiler.AstTransforms.Insert(initializers + 1, new Transforms.ConstructorParameterInitializerTransform());
+					// (After DeclareVariables. Before the field initializers: the code that fills a collection in a
+					// constructor becomes one assignment, which can be an initializer.)
+					decompiler.AstTransforms.Insert(initializers, new Transforms.CollectionExpressionTransform());
+				}
 				int usings = decompiler.AstTransforms.IndexOf(decompiler.AstTransforms.OfType<IntroduceUsingDeclarations>().FirstOrDefault()!);
 				decompiler.AstTransforms.Insert(usings < 0 ? decompiler.AstTransforms.Count : usings, new Transforms.CompilerHelperCallTransform());
 				decompiler.AstTransforms.Insert(usings < 0 ? decompiler.AstTransforms.Count : usings + 1, new Transforms.CompoundAssignmentOperatorTransform());
@@ -459,6 +463,9 @@ namespace dnSpy.Decompiler.Upstream {
 			// The tree view shows accessors below their property/event
 			if (member is MethodDef md && (md.IsGetter || md.IsSetter || md.IsAddOn || md.IsRemoveOn))
 				return true;
+			// The compiler's types of collection expressions for interfaces (CollectionExpressionTransform)
+			if (member is TypeDef type && Transforms.CollectionExpressionTransform.IsCompilerType(type))
+				return false;
 			if (member is IMemberDef def)
 				return !memberVisibility.IsHidden(def, langSettings.Settings);
 			return true;

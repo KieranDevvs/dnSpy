@@ -62,6 +62,18 @@ namespace dnSpy.Decompiler.Upstream.Tests {
 		}
 
 		static IEnumerable<string> GetWpfDirectories() {
+			// Windows: the shared framework
+			var programFiles = Environment.GetEnvironmentVariable("ProgramFiles");
+			if (programFiles is not null) {
+				var shared = Path.Combine(programFiles, "dotnet", "shared", "Microsoft.WindowsDesktop.App");
+				if (Directory.Exists(shared)) {
+					var latest = Directory.GetDirectories(shared).OrderByDescending(a => Version.TryParse(Path.GetFileName(a).Split('-')[0], out var v) ? v : new Version()).FirstOrDefault();
+					if (latest is not null && File.Exists(Path.Combine(latest, "PresentationFramework.dll"))) {
+						yield return latest;
+						yield break;
+					}
+				}
+			}
 			var nugetDir = Environment.GetEnvironmentVariable("NUGET_PACKAGES") ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".nuget", "packages");
 			foreach (var pack in new[] { "microsoft.windowsdesktop.app.runtime.win-x64", "microsoft.windowsdesktop.app.ref" }) {
 				var packDir = Path.Combine(nugetDir, pack);
