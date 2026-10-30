@@ -212,8 +212,9 @@ namespace dnSpy.Decompiler.Upstream.Tests {
 
 		static bool IsKnownUpstreamLimitation(Diagnostic error) {
 			var file = Path.GetFileName(error.Location.SourceTree?.FilePath ?? "");
-			// File-local type '<EditModern>F...__Secret' (and its file)
-			if (file.StartsWith("<", StringComparison.Ordinal) || GetLine(error).Contains("__Secret", StringComparison.Ordinal))
+			// File-local type '<EditModern>F...__Secret' and its file ('<EditModern>F....cs' on Linux, '-EditModern-F....cs'
+			// on Windows, where '<' and '>' can't be in a file name)
+			if (System.Text.RegularExpressions.Regex.IsMatch(file, "EditModern.F[0-9A-F]{16,}") || GetLine(error).Contains("__Secret", StringComparison.Ordinal))
 				return true;
 			// '<>f__AnonymousDelegate0<int, int, int> obj = (int a, int b = 2) => a + b;'
 			var line = GetLine(error);

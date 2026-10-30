@@ -167,6 +167,53 @@ namespace dnSpy.Decompiler.Upstream.Tests {
 		}
 
 		/// <summary>
+		/// 'await' in a 'finally' (Microsoft.Extensions.Hosting's RunAsync). The compiler rewrites the finally into a
+		/// catch of 'object' that saves the exception and rethrows it after the finally's code. The legacy engine
+		/// shows that rewritten code (an empty 'catch (object obj)' that doesn't compile, and the rethrow). Upstream
+		/// turns it back into try/finally.
+		/// </summary>
+		[Theory]
+		[InlineData(false)]
+		[InlineData(true)]
+		public void AwaitInFinally_IsATryFinally(bool optimize) {
+			const string source = """
+				using System;
+				using System.Threading;
+				using System.Threading.Tasks;
+				public interface IHost : IDisposable {
+					Task StartAsync(CancellationToken token);
+					Task StopAsync(CancellationToken token);
+				}
+				public static class HostExtensions {
+					public static Task WaitForShutdownAsync(this IHost host, CancellationToken token) => Task.CompletedTask;
+					public static async Task RunAsync(this IHost host, CancellationToken token = default(CancellationToken)) {
+						try {
+							await host.StartAsync(token).ConfigureAwait(continueOnCapturedContext: false);
+							await host.WaitForShutdownAsync(token).ConfigureAwait(continueOnCapturedContext: false);
+						}
+						finally {
+							if (host is IAsyncDisposable asyncDisposable) {
+								await asyncDisposable.DisposeAsync().ConfigureAwait(continueOnCapturedContext: false);
+							}
+							else {
+								host.Dispose();
+							}
+						}
+					}
+				}
+				""";
+			var module = TestCompiler.Compile(nameof(AwaitInFinally_IsATryFinally) + optimize, source, optimize).Load();
+			var text = LanguageRunner.Decompile(LanguageRunner.Create(), module.Find("HostExtensions", false)).Text;
+			log.WriteLine(text);
+			Assert.DoesNotContain("catch", text);
+			Assert.DoesNotContain("ExceptionDispatchInfo", text);
+			Assert.Matches(@"try\s*\{\s*await host\.StartAsync\(token\)\.ConfigureAwait\(continueOnCapturedContext: false\);\s*" +
+				@"await host\.WaitForShutdownAsync\(token\)\.ConfigureAwait\(continueOnCapturedContext: false\);\s*\}\s*finally\s*\{\s*" +
+				@"if \(host is IAsyncDisposable asyncDisposable\)\s*\{\s*await asyncDisposable\.DisposeAsync\(\)\.ConfigureAwait\(continueOnCapturedContext: false\);\s*\}\s*" +
+				@"else\s*\{\s*host\.Dispose\(\);\s*\}\s*\}", text);
+		}
+
+		/// <summary>
 		/// Compiler-generated types (shown in the tree with "show hidden compiler generated types and members") are
 		/// decompiled: upstream's DecompileTypes() skips them
 		/// </summary>

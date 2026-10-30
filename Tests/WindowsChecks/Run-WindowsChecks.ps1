@@ -202,7 +202,7 @@ Invoke-Step 'Build' {
 	foreach ($configuration in 'Debug', 'Release') {
 		$log = Join-Path $Out "build-dnSpy-$configuration.log"
 		$code = Invoke-Build (Join-Path $Repo 'dnSpy.sln') $configuration $log
-		$errors = Get-BuildErrors $log
+		$errors = @(Get-BuildErrors $log)
 		$warnings = @(Select-String -Path $log -Pattern ': warning ' | ForEach-Object { $_.Line.Trim() } | Sort-Object -Unique)
 		$results += "| dnSpy.sln $configuration | $(if ($code -eq 0) { 'OK' } else { "**FAILED** (exit code $code)" }) | $($errors.Count) | $($warnings.Count) |"
 		if ($errors.Count -gt 0) { $errors | Select-Object -First 40 | Set-Content (Join-Path $Out "build-dnSpy-$configuration-errors.txt") }
@@ -217,7 +217,7 @@ Invoke-Step 'Build' {
 		$name = [IO.Path]::GetFileNameWithoutExtension($item.Project)
 		$log = Join-Path $Out "build-$name-$($item.Configuration).log"
 		$code = Invoke-Logged 'dotnet' @('build', (Join-Path $Repo $item.Project), '-c', $item.Configuration, '-nologo', '-v:m') $log
-		$errors = Get-BuildErrors $log
+		$errors = @(Get-BuildErrors $log)
 		$results += "| $name $($item.Configuration) | $(if ($code -eq 0) { 'OK' } else { "**FAILED** (exit code $code)" }) | $($errors.Count) | |"
 	}
 	Add-Summary '| Build | Result | Errors | Warnings |'
@@ -260,7 +260,7 @@ Invoke-Step 'Baml' {
 		Where-Object { $_.Name -like '10.*' } | Sort-Object { [version]($_.Name -replace '-.*', '') } | Select-Object -Last 1
 	if ($desktop) { $corpora.Add(@{ Name = 'WindowsDesktop.App'; Path = $desktop.FullName }) }
 	# .NET Framework WPF and its themes (in the GAC)
-	$netfxWpf = Join-Path $Out 'baml-netfx-input'
+	$netfxWpf = Join-Path ([IO.Path]::GetTempPath()) "dnSpyWindowsChecks-baml-$Stamp"
 	New-Item -ItemType Directory -Force $netfxWpf | Out-Null
 	$gac = Join-Path $env:WINDIR 'Microsoft.NET\assembly\GAC_MSIL'
 	foreach ($name in 'PresentationFramework', 'PresentationFramework.Aero', 'PresentationFramework.Aero2', 'PresentationFramework.AeroLite',
@@ -285,6 +285,7 @@ Invoke-Step 'Baml' {
 		foreach ($problem in $problems) { Add-Summary "|  | $($problem.Line.Trim() -replace '\|', '/') |" }
 	}
 	Remove-Item Env:\BAML_CORPUS, Env:\BAML_CORPUS_OUT -ErrorAction SilentlyContinue
+	Remove-Item -Recurse -Force $netfxWpf -ErrorAction SilentlyContinue
 	Add-Summary "`nThe XAML is in baml-*/."
 }
 #endregion
@@ -294,9 +295,9 @@ Invoke-Step 'Corpus' {
 	$runner = Join-Path $Repo 'Tests\dnSpy.Decompiler.Upstream.CorpusRunner\bin\Release\net10.0-windows\dnSpy.Decompiler.Upstream.CorpusRunner.dll'
 	if (-not (Test-Path $runner)) { throw "Not built: $runner" }
 	$framework = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319'
-	$files = @('mscorlib.dll', 'System.dll', 'System.Core.dll', 'System.Xml.dll', 'System.Data.dll', 'System.Drawing.dll', 'System.Windows.Forms.dll',
+	$files = @(@('mscorlib.dll', 'System.dll', 'System.Core.dll', 'System.Xml.dll', 'System.Data.dll', 'System.Drawing.dll', 'System.Windows.Forms.dll',
 		'System.Runtime.Serialization.dll', 'System.Net.Http.dll', 'Microsoft.CSharp.dll', 'WPF\PresentationFramework.dll', 'WPF\PresentationCore.dll',
-		'WPF\WindowsBase.dll') | ForEach-Object { Join-Path $framework $_ } | Where-Object { Test-Path $_ }
+		'WPF\WindowsBase.dll') | ForEach-Object { Join-Path $framework $_ } | Where-Object { Test-Path $_ })
 	$corpusOut = Join-Path $Out 'corpus-netfx'
 	$log = Join-Path $Out 'corpus-netfx.log'
 	$arguments = @($runner, 'run', '--out', $corpusOut, '--engines', 'dnspy,legacy', '--max-types', '150') + $files
@@ -377,7 +378,7 @@ Invoke-Step 'Samples' {
 					else {
 						$code = Invoke-Logged 'dotnet' @('build', $csproj.FullName, '-c', 'Release', '-nologo', '-v:m') $buildLog 15 $csproj.DirectoryName
 					}
-					$errors = Get-BuildErrors $buildLog
+					$errors = @(Get-BuildErrors $buildLog)
 					$build = if ($code -eq 0) { 'OK' } else { "**FAILED** ($($errors.Count))" }
 					$same = ''
 					if ($code -eq 0) {
@@ -540,11 +541,13 @@ Invoke-Step 'Screenshots' {
 		@{ Name = 'csharp-upstream-program'; Language = $UpstreamCSharp; Select = 'T:ConsoleSample.Program'; File = $consoleSample },
 		@{ Name = 'csharp-legacy-program'; Language = $LegacyCSharp; Select = 'T:ConsoleSample.Program'; File = $consoleSample },
 		@{ Name = 'csharp-upstream-counter'; Language = $UpstreamCSharp; Select = 'T:ConsoleSample.Counter'; File = $consoleSample },
+		@{ Name = 'csharp-upstream-collections'; Language = $UpstreamCSharp; Select = 'M:ConsoleSample.Program.Primes'; File = $consoleSample },
 		@{ Name = 'csharp-upstream-mainwindow'; Language = $UpstreamCSharp; Select = 'T:WpfSample.MainWindow'; File = $wpfSample },
 		@{ Name = 'csharp-upstream-playground'; Language = $UpstreamCSharp; Select = 'T:DebuggerPlayground.Scenarios'; File = $playground },
-		@{ Name = 'il-with-csharp-upstream'; Language = $UpstreamILWithCSharp; Select = 'M:ConsoleSample.Program.Describe(System.Object)'; File = $consoleSample },
-		@{ Name = 'ilast-upstream'; Language = $UpstreamILAst; Select = 'M:ConsoleSample.Program.Describe(System.Object)'; File = $consoleSample },
-		@{ Name = 'typed-il-upstream'; Language = $UpstreamTypedIL; Select = 'M:ConsoleSample.Program.Describe(System.Object)'; File = $consoleSample })
+		# MethodOnly: the method on its own, not its type (the ILAst stepper only follows single methods)
+		@{ Name = 'il-with-csharp-upstream'; Language = $UpstreamILWithCSharp; Select = 'M:ConsoleSample.Program.Describe(System.Object)'; File = $consoleSample; MethodOnly = $true },
+		@{ Name = 'ilast-upstream'; Language = $UpstreamILAst; Select = 'M:ConsoleSample.Program.Describe(System.Object)'; File = $consoleSample; MethodOnly = $true },
+		@{ Name = 'typed-il-upstream'; Language = $UpstreamTypedIL; Select = 'M:ConsoleSample.Program.Describe(System.Object)'; File = $consoleSample; MethodOnly = $true })
 	$builds = @(
 		@{ Name = 'net10'; Exe = Join-Path $Repo 'dnSpy\dnSpy\bin\Debug\net10.0-windows\dnSpy.exe' },
 		@{ Name = 'net48'; Exe = Join-Path $Repo 'dnSpy\dnSpy\bin\Debug\net48\dnSpy.exe' })
@@ -563,6 +566,12 @@ Invoke-Step 'Screenshots' {
 			}
 			$settings = Join-Path $shots "settings-$($build.Name).xml"
 			Remove-Item $settings -ErrorAction SilentlyContinue
+			if ($scenario.ContainsKey('MethodOnly')) {
+				# Options -> General -> "Decompile full type" off (DocumentTabServiceSettings)
+				@('<?xml version="1.0" encoding="utf-8"?>', '<settings>',
+					'  <section _="1ace15fd-d689-40dc-b1e7-6eec25b3116f" RestoreTabs="True" DecompileFullType="False" />',
+					'</settings>') | Set-Content -Encoding UTF8 $settings
+			}
 			$arguments = @('--multiple', '--settings-file', "`"$settings`"", '--language', $scenario.Language, '--select', "`"$($scenario.Select)`"", "`"$($scenario.File)`"")
 			$process = Start-Process -FilePath $build.Exe -ArgumentList $arguments -PassThru
 			$deadline = (Get-Date).AddSeconds(90)

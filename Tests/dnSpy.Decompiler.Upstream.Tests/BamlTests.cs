@@ -179,8 +179,17 @@ namespace dnSpy.Decompiler.Upstream.Tests {
 			var watch = System.Diagnostics.Stopwatch.StartNew();
 			// One context like dnSpy: the referenced assemblies are loaded once
 			var context = CreateModuleContext();
+			int skipped = 0;
 			foreach (var file in Directory.GetFiles(dir, "*.dll").OrderBy(a => a, StringComparer.Ordinal)) {
-				var module = ModuleDefMD.Load(file, context);
+				ModuleDefMD module;
+				try {
+					module = ModuleDefMD.Load(file, context);
+				}
+				catch (BadImageFormatException) {
+					// A native DLL (the WPF framework folder has some)
+					skipped++;
+					continue;
+				}
 				foreach (var (name, data) in GetBamlResources(module)) {
 					total++;
 					string xaml;
@@ -204,7 +213,7 @@ namespace dnSpy.Decompiler.Upstream.Tests {
 					}
 				}
 			}
-			log.WriteLine($"BAML: {total} documents, {withProblems} with connection ID problems, {connections} with names or handlers ({watch.Elapsed.TotalSeconds:F1} s)");
+			log.WriteLine($"BAML: {total} documents, {withProblems} with connection ID problems, {connections} with names or handlers, {skipped} native DLLs skipped ({watch.Elapsed.TotalSeconds:F1} s)");
 		}
 	}
 }
