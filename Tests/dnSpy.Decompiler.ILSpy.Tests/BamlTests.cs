@@ -23,6 +23,7 @@ using System.IO;
 using System.Linq;
 using System.Text;
 using System.Threading;
+using System.Xml.Linq;
 using dnlib.DotNet;
 using dnlib.DotNet.Resources;
 using dnSpy.Contracts.Decompiler;
@@ -163,6 +164,39 @@ namespace dnSpy.Decompiler.ILSpy.Tests {
 			for (int index = 0; (index = text.IndexOf(value, index, StringComparison.Ordinal)) >= 0; index += value.Length)
 				count++;
 			return count;
+		}
+
+		/// <summary>
+		/// .NET's Fluent theme (PresentationFramework.Fluent): the root declares 'sys' for System in mscorlib, an element
+		/// of a merged dictionary declares 'sys' for System in System.Runtime and is itself mscorlib's 'Double'. The XML
+		/// writer threw ("The prefix 'sys' cannot be redefined ... within the same start element tag"); the element gets
+		/// its own prefix for mscorlib.
+		/// </summary>
+		[Fact]
+		public void XmlnsConflicts_AreWritten() {
+			XNamespace presentation = "http://schemas.microsoft.com/winfx/2006/xaml/presentation";
+			XNamespace mscorlib = "clr-namespace:System;assembly=mscorlib";
+			XNamespace runtime = "clr-namespace:System;assembly=System.Runtime";
+			var doc = new XDocument(new XElement(presentation + "ResourceDictionary",
+				new XAttribute("xmlns", presentation.NamespaceName),
+				new XAttribute(XNamespace.Xmlns + "sys", mscorlib.NamespaceName),
+				new XElement(mscorlib + "Double", new XAttribute(XNamespace.Xmlns + "sys", runtime.NamespaceName), "12"),
+				new XElement(presentation + "Grid", new XAttribute(XNamespace.Xmlns + "sys", runtime.NamespaceName),
+					new XElement(mscorlib + "String", "a"),
+					new XElement(runtime + "Int32", "1")),
+				new XElement(mscorlib + "Boolean", "True")));
+			// (Internal, like the decompiler itself, which dnSpy.Console loads by name)
+			var passType = System.Reflection.Assembly.Load("dnSpy.BamlDecompiler.x").GetType("dnSpy.BamlDecompiler.Rewrite.XmlnsConflictRewritePass", throwOnError: true)!;
+			passType.GetMethod("Run")!.Invoke(Activator.CreateInstance(passType), new object?[] { null, doc });
+			var xaml = doc.ToString();
+			log.WriteLine(xaml);
+			// Same names, and the prefixes mean what they meant before
+			var read = XDocument.Parse(xaml);
+			Assert.Equal(doc.Descendants().Select(a => a.Name), read.Descendants().Select(a => a.Name));
+			Assert.Contains("<sys1:Double", xaml);
+			Assert.Contains("<sys1:String", xaml);
+			Assert.Contains("<sys:Int32", xaml);
+			Assert.Contains("<sys:Boolean", xaml);
 		}
 
 		/// <summary>

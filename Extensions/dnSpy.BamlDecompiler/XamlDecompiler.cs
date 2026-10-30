@@ -37,6 +37,7 @@ namespace dnSpy.BamlDecompiler {
 			new AttributeRewritePass(),
 			new ConnectionIdRewritePass(),
 			new DocumentRewritePass(),
+			new XmlnsConflictRewritePass(),
 		};
 
 		public static string DecompileTypeName(ModuleDef module, BamlDocument document, CancellationToken token, BamlDecompilerOptions bamlDecompilerOptions) {

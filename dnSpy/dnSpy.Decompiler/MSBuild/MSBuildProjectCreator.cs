@@ -22,6 +22,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using dnSpy.Decompiler.Properties;
@@ -104,9 +105,9 @@ namespace dnSpy.Decompiler.MSBuild {
 					}
 					catch (Exception ex) {
 						if (job is IFileJob fjob)
-							logger.Error(string.Format(dnSpy_Decompiler_Resources.MSBuild_FileCreationFailed3, fjob.Filename, job.Description, ex.Message));
+							logger.Error(string.Format(dnSpy_Decompiler_Resources.MSBuild_FileCreationFailed3, fjob.Filename, job.Description, GetErrorMessage(ex)));
 						else
-							logger.Error(string.Format(dnSpy_Decompiler_Resources.MSBuild_FileCreationFailed2, job.Description, ex.Message));
+							logger.Error(string.Format(dnSpy_Decompiler_Resources.MSBuild_FileCreationFailed2, job.Description, GetErrorMessage(ex)));
 					}
 					progressListener.SetProgress(Interlocked.Increment(ref totalProgress));
 				});
@@ -155,6 +156,24 @@ namespace dnSpy.Decompiler.MSBuild {
 				foreach (var j in p.GetJobs())
 					yield return j;
 			}
+		}
+
+		/// <summary>
+		/// The message and, for a wrapped exception (the decompiler's "Error decompiling @02000005 Type"), the inner
+		/// exceptions and where the innermost one was thrown
+		/// </summary>
+		static string GetErrorMessage(Exception ex) {
+			var sb = new StringBuilder(ex.Message);
+			var innermost = ex;
+			while (innermost.InnerException is Exception inner) {
+				innermost = inner;
+				sb.Append(" ---> ").Append(inner.GetType().FullName).Append(": ").Append(inner.Message);
+			}
+			if (innermost != ex && innermost.StackTrace is string stackTrace) {
+				var frames = stackTrace.Split('\n').Select(a => a.Trim()).Where(a => a.Length != 0).Take(10);
+				sb.Append(" (").Append(string.Join(" | ", frames)).Append(')');
+			}
+			return sb.ToString();
 		}
 	}
 }

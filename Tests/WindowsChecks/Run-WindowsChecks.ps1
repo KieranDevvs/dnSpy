@@ -398,8 +398,10 @@ Invoke-Step 'Samples' {
 						$xaml = Get-ChildItem $exportDir -Filter MainWindow.xaml -Recurse | Select-Object -First 1
 						if ($xaml) {
 							$text = Get-Content -Raw $xaml.FullName
-							$missing = @('Name="okButton"', 'Click="OkButton_Click"', 'Button.Click="Toolbar_Click"', 'Handler="Item_MouseDoubleClick"',
-								'TextChanged="NameBox_TextChanged"', 'Loaded="Window_Loaded"') | Where-Object { -not $text.Contains($_) }
+							# (Regular expressions. The attached event is ButtonBase.Click: Click is declared there.)
+							$missing = @('Name="okButton"', 'Click="OkButton_Click"', '(Button|ButtonBase)\.Click="Toolbar_Click"', 'Handler="Item_MouseDoubleClick"',
+								'TextChanged="NameBox_TextChanged"', 'Loaded="Window_Loaded"', '<EventSetter') | Where-Object { $text -notmatch $_ }
+							if ($text -match 'Unknown connection ID|cannot be parsed') { $missing = @($missing) + 'no connection ID problems' }
 							if ($missing) { $same += " XAML is missing: $($missing -join ', ')" }
 						}
 						else { $same += ' no MainWindow.xaml' }

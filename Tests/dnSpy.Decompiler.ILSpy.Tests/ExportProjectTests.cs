@@ -313,6 +313,78 @@ namespace dnSpy.Decompiler.ILSpy.Tests {
 			Assert.DoesNotContain("Connect(", text);
 		}
 
+		const string StyleConnectorProgram = """
+			using System;
+			namespace System.Windows.Markup {
+				public interface IComponentConnector {
+					void Connect(int connectionId, object target);
+					void InitializeComponent();
+				}
+				public interface IStyleConnector {
+					void Connect(int connectionId, object target);
+				}
+			}
+			namespace StyleConnector {
+				public class Window1 : System.Windows.Markup.IComponentConnector, System.Windows.Markup.IStyleConnector {
+					internal object okButton;
+					private bool _contentLoaded;
+					public Window1() => InitializeComponent();
+					public void InitializeComponent() {
+						if (_contentLoaded)
+							return;
+						_contentLoaded = true;
+					}
+					void System.Windows.Markup.IComponentConnector.Connect(int connectionId, object target) {
+						if (connectionId == 1)
+							okButton = target;
+					}
+					void System.Windows.Markup.IStyleConnector.Connect(int connectionId, object target) {
+						if (connectionId == 2)
+							Console.WriteLine(target);
+					}
+					public void Connect(int id, object value) => Console.WriteLine(value);
+					void OnClick(object sender, EventArgs e) => Console.WriteLine(okButton);
+				}
+			}
+			""";
+
+		/// <summary>
+		/// The members of a XAML code-behind type that the XAML compiler generates: also IStyleConnector.Connect (a style
+		/// with an EventSetter), which can't be in the code-behind file twice, but not the type's own Connect method
+		/// </summary>
+		[Fact]
+		public void XamlCodeBehind_GeneratedMembers() {
+			var module = TestCompiler.Compile("StyleConnector", StyleConnectorProgram).Load();
+			var type = module.Find("StyleConnector.Window1", false);
+			var defs = XamlTypeProjectFile.GetDefsToRemove(type).Select(a => a.Name.String).ToList();
+			log.WriteLine(string.Join(", ", defs));
+			Assert.Contains("InitializeComponent", defs);
+			Assert.Contains("_contentLoaded", defs);
+			Assert.Contains("System.Windows.Markup.IComponentConnector.Connect", defs);
+			Assert.Contains("System.Windows.Markup.IStyleConnector.Connect", defs);
+			Assert.Contains("okButton", defs);
+			Assert.DoesNotContain("Connect", defs);
+			Assert.DoesNotContain("OnClick", defs);
+		}
+
+		/// <summary>
+		/// SDK-style projects for .NET 5+ target the assembly's platform ("net10.0-windows7.0"; WPF and Windows Forms
+		/// projects can't be built without a Windows platform, NETSDK1136)
+		/// </summary>
+		[Theory]
+		[InlineData(null, "net10.0")]
+		[InlineData("Windows7.0", "net10.0-windows7.0")]
+		[InlineData("Windows10.0.19041.0", "net10.0-windows10.0.19041.0")]
+		public void SdkProject_TargetFrameworkPlatform(string? platform, string expected) {
+			var source = WithTargetFramework("namespace Platform { public static class Program { public static void Main() { } } }");
+			if (platform is not null)
+				source = $"[assembly: System.Runtime.Versioning.TargetPlatform(\"{platform}\")]\n" + source;
+			var module = TestCompiler.Compile("Platform", source).Load();
+			var project = Export(module, LanguageRunner.Create(), sdkStyle: true);
+			Assert.Empty(project.Errors);
+			Assert.Equal(expected, project.GetProperty("TargetFramework"));
+		}
+
 		/// <summary>
 		/// dnSpy's own WPF dialogs (dnSpy.AsmEditor): each XAML file's code-behind is the other part of the partial type,
 		/// without what the XAML compiler generates (InitializeComponent, Connect, the named elements' fields)
@@ -325,6 +397,8 @@ namespace dnSpy.Decompiler.ILSpy.Tests {
 			// (The ResX writer needs WinForms, which the test host doesn't have on Linux)
 			var errors = project.Errors.Where(a => !a.Contains("Create ResX file", StringComparison.Ordinal) || !a.Contains("System.Windows.Forms", StringComparison.Ordinal)).ToList();
 			Assert.True(errors.Count == 0, string.Join(Environment.NewLine, errors.Take(3)));
+			// A WPF project needs a Windows platform
+			Assert.Equal("net10.0-windows7.0", project.GetProperty("TargetFramework"));
 			var codeBehind = project.SourceFiles.Where(a => a.EndsWith(".xaml.cs", StringComparison.OrdinalIgnoreCase)).ToList();
 			log.WriteLine($"{project.SourceFiles.Count} files, {codeBehind.Count} code-behind files");
 			Assert.True(codeBehind.Count >= 40, codeBehind.Count.ToString());

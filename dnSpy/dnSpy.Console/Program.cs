@@ -689,6 +689,67 @@ namespace dnSpy_Console {
 		}
 		readonly HashSet<string> addedPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
+		/// <summary>
+		/// A module built for .NET (Core) references the shared framework's assemblies (System.Runtime...), which aren't
+		/// in the GAC. Like dnSpy, look for them in the installed runtime with the same (or the closest) version, after
+		/// the module's folder and the --asm-path folders.
+		/// </summary>
+		void AddDotNetSearchPaths(ModuleDef module) {
+			var version = GetDotNetVersion(module);
+			if (version is null)
+				return;
+			dotNetPathProvider ??= new DotNetPathProvider();
+			var paths = dotNetPathProvider.TryGetSharedDotNetPaths(version, module.GetPointerSize(IntPtr.Size) * 8) ?? GetRunningDotNetPaths();
+			foreach (var dir in paths) {
+				if (Directory.Exists(dir) && !addedPaths.Contains(dir)) {
+					addedPaths.Add(dir);
+					assemblyResolver.PostSearchPaths.Add(dir);
+				}
+			}
+		}
+		DotNetPathProvider? dotNetPathProvider;
+
+		/// <summary>
+		/// The shared framework this program runs on, if it's .NET (DotNetPathProvider only finds Windows installs)
+		/// </summary>
+		static string[] GetRunningDotNetPaths() {
+			if (typeof(object).Assembly.GetName().Name == "mscorlib")
+				return Array.Empty<string>();
+			// <dotnet>/shared/Microsoft.NETCore.App/10.0.14
+			var runtimeDir = Path.GetDirectoryName(typeof(object).Assembly.Location);
+			if (string2.IsNullOrEmpty(runtimeDir))
+				return Array.Empty<string>();
+			var version = Path.GetFileName(runtimeDir);
+			var sharedDir = Path.GetDirectoryName(Path.GetDirectoryName(runtimeDir));
+			var paths = new List<string> { runtimeDir };
+			if (sharedDir is not null) {
+				foreach (var framework in new[] { "Microsoft.WindowsDesktop.App", "Microsoft.AspNetCore.App" }) {
+					var dir = Path.Combine(sharedDir, framework, version);
+					if (Directory.Exists(dir))
+						paths.Add(dir);
+				}
+			}
+			return paths.ToArray();
+		}
+
+		static Version? GetDotNetVersion(ModuleDef module) {
+			// [assembly: TargetFramework(".NETCoreApp,Version=v10.0")]
+			var attr = module.Assembly?.CustomAttributes.Find("System.Runtime.Versioning.TargetFrameworkAttribute");
+			if (attr is not null && attr.ConstructorArguments.Count == 1 && attr.ConstructorArguments[0].Value is UTF8String name) {
+				const string prefix = ".NETCoreApp,Version=v";
+				if (name.String.StartsWith(prefix, StringComparison.Ordinal) && Version.TryParse(name.String.Substring(prefix.Length), out var version))
+					return version;
+				// .NET Framework (the GAC) or .NET Standard
+				return null;
+			}
+			// No attribute: .NET 5+ references System.Runtime 5.0+
+			foreach (var asmRef in module.GetAssemblyRefs()) {
+				if (asmRef.Name == "System.Runtime" && asmRef.Version.Major >= 5)
+					return new Version(asmRef.Version.Major, asmRef.Version.Minor);
+			}
+			return null;
+		}
+
 		void Decompile() {
 			foreach (var dir in asmPaths)
 				AddSearchPath(dir);
@@ -960,6 +1021,7 @@ namespace dnSpy_Console {
 			mod.EnableTypeDefFindCache = true;
 			((AssemblyResolver)moduleContext.AssemblyResolver).AddToCache(mod);
 			AddSearchPath(Path.GetDirectoryName(mod.Location)!);
+			AddDotNetSearchPaths(mod);
 			var proj = new ProjectModuleOptions(mod, GetLanguage(), decompilationContext);
 			proj.DontReferenceStdLib = !addCorlibRef;
 			proj.UnpackResources = unpackResources;
