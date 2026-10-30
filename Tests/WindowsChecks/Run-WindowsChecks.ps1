@@ -13,7 +13,7 @@
 	and all output goes to Tests\WindowsChecks\out\<date-time>. Steps (see README.md):
 
 		Build        dnSpy.sln, Debug and Release, .NET Framework 4.8 and .NET 10 (and the test projects)
-		Tests        the headless test suite (Tests\dnSpy.Decompiler.Upstream.Tests) on Windows
+		Tests        the headless test suite (Tests\dnSpy.Decompiler.ILSpy.Tests) on Windows
 		Baml         BAML -> XAML of dnSpy's own assemblies and the WPF framework (Windows resolves all references)
 		Corpus       decompiles .NET Framework 4.8 assemblies (mscorlib, WinForms, WPF, ...)
 		Samples      a console, WPF, WinForms and .NET Framework app: exported with dnSpy.Console (.NET 10 and
@@ -212,8 +212,8 @@ Invoke-Step 'Build' {
 	}
 	# The test projects (not in dnSpy.sln)
 	foreach ($item in @(
-			@{ Project = 'Tests\dnSpy.Decompiler.Upstream.Tests\dnSpy.Decompiler.Upstream.Tests.csproj'; Configuration = 'Debug' },
-			@{ Project = 'Tests\dnSpy.Decompiler.Upstream.CorpusRunner\dnSpy.Decompiler.Upstream.CorpusRunner.csproj'; Configuration = 'Release' },
+			@{ Project = 'Tests\dnSpy.Decompiler.ILSpy.Tests\dnSpy.Decompiler.ILSpy.Tests.csproj'; Configuration = 'Debug' },
+			@{ Project = 'Tests\dnSpy.Decompiler.ILSpy.CorpusRunner\dnSpy.Decompiler.ILSpy.CorpusRunner.csproj'; Configuration = 'Release' },
 			@{ Project = 'Tests\DebuggerPlayground\DebuggerPlayground.csproj'; Configuration = 'Debug' },
 			@{ Project = 'Tests\DebuggerPlayground\DebuggerPlayground.csproj'; Configuration = 'Release' })) {
 		$name = [IO.Path]::GetFileNameWithoutExtension($item.Project)
@@ -232,7 +232,7 @@ Invoke-Step 'Build' {
 Invoke-Step 'Tests' {
 	$results = Join-Path $Out 'tests'
 	$log = Join-Path $Out 'tests.log'
-	$project = Join-Path $Repo 'Tests\dnSpy.Decompiler.Upstream.Tests\dnSpy.Decompiler.Upstream.Tests.csproj'
+	$project = Join-Path $Repo 'Tests\dnSpy.Decompiler.ILSpy.Tests\dnSpy.Decompiler.ILSpy.Tests.csproj'
 	$code = Invoke-Logged 'dotnet' @('test', $project, '-c', 'Debug', '--no-build', '--logger', 'trx;LogFileName=tests.trx',
 		'--logger', 'console;verbosity=normal', '--results-directory', $results) $log 120
 	$trx = Get-ChildItem $results -Filter *.trx -Recurse | Select-Object -First 1
@@ -254,7 +254,7 @@ Invoke-Step 'Tests' {
 
 #region BAML
 Invoke-Step 'Baml' {
-	$project = Join-Path $Repo 'Tests\dnSpy.Decompiler.Upstream.Tests\dnSpy.Decompiler.Upstream.Tests.csproj'
+	$project = Join-Path $Repo 'Tests\dnSpy.Decompiler.ILSpy.Tests\dnSpy.Decompiler.ILSpy.Tests.csproj'
 	$corpora = New-Object System.Collections.Generic.List[object]
 	$dnSpyBin = Join-Path $Repo 'dnSpy\dnSpy\bin\Debug\net10.0-windows'
 	if (Test-Path $dnSpyBin) { $corpora.Add(@{ Name = 'dnSpy'; Path = $dnSpyBin }) }
@@ -294,7 +294,7 @@ Invoke-Step 'Baml' {
 
 #region Corpus
 Invoke-Step 'Corpus' {
-	$runner = Join-Path $Repo 'Tests\dnSpy.Decompiler.Upstream.CorpusRunner\bin\Release\net10.0-windows\dnSpy.Decompiler.Upstream.CorpusRunner.dll'
+	$runner = Join-Path $Repo 'Tests\dnSpy.Decompiler.ILSpy.CorpusRunner\bin\Release\net10.0-windows\dnSpy.Decompiler.ILSpy.CorpusRunner.dll'
 	if (-not (Test-Path $runner)) { throw "Not built: $runner" }
 	$framework = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319'
 	$files = @(@('mscorlib.dll', 'System.dll', 'System.Core.dll', 'System.Xml.dll', 'System.Data.dll', 'System.Drawing.dll', 'System.Windows.Forms.dll',

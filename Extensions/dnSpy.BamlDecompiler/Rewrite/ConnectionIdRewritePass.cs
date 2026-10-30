@@ -30,7 +30,7 @@ using dnSpy.BamlDecompiler.Baml;
 using dnSpy.BamlDecompiler.Properties;
 using dnSpy.BamlDecompiler.Xaml;
 using dnSpy.Contracts.Decompiler;
-using dnSpy.Decompiler.Upstream;
+using dnSpy.Decompiler.ILSpy.Core;
 using ICSharpCode.Decompiler.IL;
 using ICSharpCode.Decompiler.TypeSystem;
 

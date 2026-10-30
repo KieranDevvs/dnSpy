@@ -3,7 +3,7 @@
 A small program for checking dnSpy's debugger on decompiled code by hand, on Windows. Each scenario is a case
 where the upstream decompiler's debug info sent breakpoints, stepping or the call stack to the wrong code before
 dnSpy's adapter fixed it. The same program also runs in the automated stepping tests
-(`Tests/dnSpy.Decompiler.Upstream.Tests/SteppingTests.cs`), which replay dnSpy's stepper over its execution trace on
+(`Tests/dnSpy.Decompiler.ILSpy.Tests/SteppingTests.cs`), which replay dnSpy's stepper over its execution trace on
 Linux, so this checklist is about what only the real debugger can show: the UI, the JIT and CorDebug.
 
 ## Setup

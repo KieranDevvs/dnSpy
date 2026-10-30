@@ -22,6 +22,7 @@ namespace dnSpy.Decompiler.ILSpy.Core.Text {
 		public const string DecompilerILSpy = "Decompiler ILSpy";
 		public const string CSharpILSpy = "C# ILSpy";
 		public const string ILILSpy = "IL ILSpy";
+		public const string ILAstILSpy = "ILAst ILSpy";
 		public const string ILWithCSharpILSpy = "IL with C# ILSpy";
 	}
 }

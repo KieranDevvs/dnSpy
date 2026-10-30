@@ -46,6 +46,13 @@ namespace dnSpy.Decompiler.ILSpy {
 		[Name(ContentTypesInternal.ILWithCSharpILSpy)]
 		[BaseDefinition(ContentTypesInternal.ILILSpy)]
 		static readonly ContentTypeDefinition? ILWithCSharpILSpyContentTypeDefinition;
+
+#if DEBUG
+		[Export]
+		[Name(ContentTypesInternal.ILAstILSpy)]
+		[BaseDefinition(ContentTypesInternal.DecompilerILSpy)]
+		static readonly ContentTypeDefinition? ILAstILSpyContentTypeDefinition;
+#endif
 #pragma warning restore CS0169
 	}
 }

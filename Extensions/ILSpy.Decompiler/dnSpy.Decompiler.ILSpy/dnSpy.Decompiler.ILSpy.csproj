@@ -40,4 +40,19 @@
     <PackageReference Include="Microsoft.VisualStudio.Text.UI.Wpf" Version="$(MSVSTextVersion)" />
   </ItemGroup>
 
+  <!--
+    Files of the decompiler projects that were merged into this one or deleted, left in the output folder by earlier
+    builds. dnSpy loads every *.x.dll in its folder: an old dnSpy.Decompiler.Upstream.x.dll would add a second C#
+    language.
+  -->
+  <Target Name="DeleteRemovedDecompilerFiles" AfterTargets="Build">
+    <ItemGroup>
+      <_RemovedDecompilerFile Include="$(OutDir)dnSpy.Decompiler.Upstream.x.*" />
+      <_RemovedDecompilerFile Include="$(OutDir)dnSpy.Decompiler.Upstream.Core.*" />
+      <_RemovedDecompilerFile Include="$(OutDir)ICSharpCode.Decompiler.Legacy.*" />
+      <_RemovedDecompilerFile Include="$(OutDir)ICSharpCode.NRefactory.*" />
+    </ItemGroup>
+    <Delete Files="@(_RemovedDecompilerFile)" />
+  </Target>
+
 </Project>

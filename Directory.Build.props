@@ -1,13 +1,2 @@
 <Project>
-
-  <!--
-    The legacy decompiler fork (submodule Extensions/ILSpy.Decompiler/ICSharpCode.Decompiler, ILSpy 2.x on dnlib)
-    builds an assembly called ICSharpCode.Decompiler, which is also the name of the upstream ICSharpCode.Decompiler
-    NuGet package used by dnSpy.Decompiler.Upstream.*. Rename the legacy assembly so both can be loaded side by side
-    until the legacy engine is removed.
-  -->
-  <PropertyGroup Condition=" '$(MSBuildProjectName)' == 'ICSharpCode.Decompiler' and $(MSBuildProjectDirectory.Replace('\', '/').Contains('ILSpy.Decompiler/ICSharpCode.Decompiler/ICSharpCode.Decompiler')) ">
-    <AssemblyName>ICSharpCode.Decompiler.Legacy</AssemblyName>
-  </PropertyGroup>
-
 </Project>

@@ -17,40 +17,17 @@ using dnSpy.Decompiler.Utils;
 using dnSpy.Decompiler.ILSpy.Core.Disassembler;
 
 namespace dnSpy.Decompiler.ILSpy.Core.Mixed {
+	/// <summary>
+	/// dnSpy.Console's "IL with C#". (dnSpy creates it in its extension, with the C# decompiler that has the user's
+	/// settings.)
+	/// </summary>
 	sealed class DecompilerProvider : IDecompilerProvider {
-		readonly DecompilerSettingsService decompilerSettingsService;
-
 		// Keep the default ctor. It's used by dnSpy.Console.exe
-		public DecompilerProvider()
-			: this(DecompilerSettingsService.__Instance_DONT_USE) {
-		}
-
-		public DecompilerProvider(DecompilerSettingsService decompilerSettingsService) {
-			Debug2.Assert(decompilerSettingsService is not null);
-			this.decompilerSettingsService = decompilerSettingsService ?? throw new ArgumentNullException(nameof(decompilerSettingsService));
-		}
+		public DecompilerProvider() { }
 
 		public IEnumerable<IDecompiler> Create() {
-			// dnSpy.Console: the C# decompiler is in another assembly. (dnSpy creates this decompiler in its
-			// extension, with the C# decompiler that has the user's settings.)
-			if (ReferenceEquals(decompilerSettingsService, DecompilerSettingsService.__Instance_DONT_USE) && TryCreateUpstreamCSharpDecompiler() is IDecompiler csharp)
-				yield return ILWithCSharpDecompiler.Create(decompilerSettingsService.ILDecompilerSettings, csharp);
-		}
-
-		static IDecompiler? TryCreateUpstreamCSharpDecompiler() {
-			try {
-				var type = Type.GetType("dnSpy.Decompiler.Upstream.UpstreamDecompilerProvider, dnSpy.Decompiler.Upstream.Core");
-				if (type is null)
-					return null;
-				var provider = (IDecompilerProvider)Activator.CreateInstance(type)!;
-				foreach (var decompiler in provider.Create()) {
-					if (decompiler.GenericGuid == DecompilerConstants.LANGUAGE_CSHARP)
-						return decompiler;
-				}
-			}
-			catch (Exception ex) when (ex is System.IO.IOException || ex is BadImageFormatException || ex is TypeLoadException || ex is MissingMethodException || ex is System.Reflection.TargetInvocationException) {
-			}
-			return null;
+			var csharp = new UpstreamCSharpLanguage(new Settings.UpstreamDecompilerSettings());
+			yield return ILWithCSharpDecompiler.Create(DecompilerSettingsService.__Instance_DONT_USE.ILDecompilerSettings, csharp);
 		}
 	}
 

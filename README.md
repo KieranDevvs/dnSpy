@@ -54,8 +54,8 @@ To debug Unity games, you need this repo too: https://github.com/dnSpyEx/dnSpy-U
 # Assembly Editor
 
 - All metadata can be edited
-- Edit methods and classes in C# or Visual Basic with IntelliSense, no source code required
-- Add new methods, classes or members in C# or Visual Basic
+- Edit methods and classes in C# with IntelliSense, no source code required
+- Add new methods, classes or members in C#
 - IL editor for low-level IL method body editing
 - Low-level metadata tables can be edited. This uses the hex editor internally.
 
@@ -81,12 +81,12 @@ To debug Unity games, you need this repo too: https://github.com/dnSpyEx/dnSpy-U
 - References are highlighted, use Tab / Shift+Tab to move to the next reference
 - Go to the entry point and module initializer commands
 - Go to metadata token or metadata row commands
-- Code tooltips (C# and Visual Basic)
+- Code tooltips
 - Export to project
 
 # List of other open source libraries used by dnSpy
 
-- [ILSpy decompiler engine](https://github.com/icsharpcode/ILSpy) (C# and Visual Basic decompilers)
+- [ILSpy decompiler engine](https://github.com/icsharpcode/ILSpy) (C# decompiler, the unmodified ICSharpCode.Decompiler package)
 - [Roslyn](https://github.com/dotnet/roslyn) (C# and Visual Basic compilers)
 - [dnlib](https://github.com/0xd4d/dnlib) (.NET metadata reader/writer which can also read obfuscated assemblies)
 - [VS MEF](https://github.com/microsoft/vs-mef) (Faster MEF equals faster startup)
