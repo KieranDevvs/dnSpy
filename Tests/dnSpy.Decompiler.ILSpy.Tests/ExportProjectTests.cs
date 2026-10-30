@@ -417,6 +417,32 @@ namespace dnSpy.Decompiler.ILSpy.Tests {
 		}
 
 		/// <summary>
+		/// The Windows checks' WPF app (built with the tests). Its App.xaml has resources, so it's BAML, and the XAML
+		/// compiler put its Startup handler in InitializeComponent: the exported App.xaml must have it, or the exported app
+		/// doesn't run its startup code (the Windows checks' run timed out). The window keeps its names and handlers.
+		/// </summary>
+		[Fact]
+		public void Wpf_SampleApp() {
+			var file = Path.Combine(AppContext.BaseDirectory, "Samples", "WpfSample", "WpfSample.dll");
+			var module = ModuleDefMD.Load(file, BamlTests.CreateModuleContext());
+			var project = Export(module, LanguageRunner.Create(), sdkStyle: true, decompileXaml: true);
+			Assert.True(project.Errors.Count == 0, string.Join(Environment.NewLine, project.Errors));
+			Assert.Equal("net10.0-windows7.0", project.GetProperty("TargetFramework"));
+			var dir = Path.GetDirectoryName(project.ProjectFile)!;
+			var app = File.ReadAllText(Path.Combine(dir, "App.xaml"));
+			log.WriteLine(app);
+			Assert.Contains("Startup=\"App_Startup\"", app);
+			Assert.Contains("x:Key=\"AccentBrush\"", app);
+			Assert.DoesNotContain("StartupUri", app);
+			var window = File.ReadAllText(Path.Combine(dir, "MainWindow.xaml"));
+			foreach (var expected in new[] { "Loaded=\"Window_Loaded\"", "Click=\"OkButton_Click\"", "Click=\"Toolbar_Click\"", "TextChanged=\"NameBox_TextChanged\"", "Handler=\"Item_MouseDoubleClick\"", "Name=\"okButton\"" })
+				Assert.Contains(expected, window);
+			var codeBehind = File.ReadAllText(Path.Combine(dir, "MainWindow.xaml.cs"));
+			Assert.DoesNotContain("Connect(", codeBehind);
+			Assert.DoesNotContain("void InitializeComponent()", codeBehind);
+		}
+
+		/// <summary>
 		/// Opt-in (EXPORT_CORPUS=dir): exports each assembly in the directory and compiles the project's code against the
 		/// assembly's references. EXPORT_CORPUS_OUT=dir keeps the projects.
 		/// </summary>

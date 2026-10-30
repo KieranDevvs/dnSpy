@@ -27,6 +27,7 @@ using System.Xml.Linq;
 using dnlib.DotNet;
 using dnlib.DotNet.Resources;
 using dnSpy.Contracts.Decompiler;
+using dnSpy.Decompiler.ILSpy.Tests.Infrastructure;
 using Xunit;
 using Xunit.Abstractions;
 
@@ -197,6 +198,53 @@ namespace dnSpy.Decompiler.ILSpy.Tests {
 			Assert.Contains("<sys1:String", xaml);
 			Assert.Contains("<sys:Int32", xaml);
 			Assert.Contains("<sys:Boolean", xaml);
+		}
+
+		const string ApplicationProgram = """
+			using System;
+			namespace System.Windows {
+				public class StartupEventArgs : EventArgs { }
+				public delegate void StartupEventHandler(object sender, StartupEventArgs e);
+				public class Application {
+					public event StartupEventHandler Startup;
+					public event EventHandler Exit;
+					public Uri StartupUri { get; set; }
+					public static void LoadComponent(object component, Uri resourceLocator) { }
+				}
+			}
+			namespace AppTest {
+				// What the XAML compiler generates for <Application x:Class="AppTest.App" Startup="App_Startup" Exit="OnExit" StartupUri="Views/MainWindow.xaml">
+				public class App : System.Windows.Application {
+					bool _contentLoaded;
+					public void InitializeComponent() {
+						if (_contentLoaded)
+							return;
+						_contentLoaded = true;
+						this.Startup += new System.Windows.StartupEventHandler(this.App_Startup);
+						this.Exit += new System.EventHandler(this.OnExit);
+						this.StartupUri = new System.Uri("Views/MainWindow.xaml", System.UriKind.Relative);
+						System.Uri resourceLocater = new System.Uri("/AppTest;component/app.xaml", System.UriKind.Relative);
+						System.Windows.Application.LoadComponent(this, resourceLocater);
+					}
+					void App_Startup(object sender, System.Windows.StartupEventArgs e) { }
+					protected virtual void OnExit(object sender, EventArgs e) { }
+				}
+			}
+			""";
+
+		/// <summary>
+		/// App.xaml's StartupUri and event handlers are code in InitializeComponent (not the resource locator's URI)
+		/// </summary>
+		[Theory]
+		[InlineData(false)]
+		[InlineData(true)]
+		public void ApplicationXaml_AttributesFromInitializeComponent(bool optimize) {
+			var module = TestCompiler.Compile("AppTest", ApplicationProgram, optimize).Load();
+			var method = module.Find("AppTest.App", false).FindMethod("InitializeComponent");
+			var passType = System.Reflection.Assembly.Load("dnSpy.BamlDecompiler.x").GetType("dnSpy.BamlDecompiler.Rewrite.ApplicationRewritePass", throwOnError: true)!;
+			var result = passType.GetMethod("GetAttributes", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!.Invoke(null, new object[] { method });
+			var attributes = ((System.Collections.IEnumerable)result!).Cast<object>().Select(a => a.ToString()).ToArray();
+			Assert.Equal(new[] { "(Startup, App_Startup)", "(Exit, OnExit)", "(StartupUri, Views/MainWindow.xaml)" }, attributes);
 		}
 
 		/// <summary>

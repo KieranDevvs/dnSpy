@@ -36,6 +36,7 @@ namespace dnSpy.BamlDecompiler {
 			new MarkupExtensionRewritePass(),
 			new AttributeRewritePass(),
 			new ConnectionIdRewritePass(),
+			new ApplicationRewritePass(),
 			new DocumentRewritePass(),
 			new XmlnsConflictRewritePass(),
 		};

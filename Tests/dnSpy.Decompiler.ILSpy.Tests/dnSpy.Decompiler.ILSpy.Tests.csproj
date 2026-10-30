@@ -44,4 +44,15 @@
     <None Include="..\DebuggerPlayground\Program.cs" Link="Samples\DebuggerPlayground.cs" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
+  <!--
+    The WPF sample app of the Windows checks (App.xaml with resources and a Startup handler, a window with names,
+    handlers and an EventSetter): built (WPF builds on Linux too) and copied as test data, not referenced
+  -->
+  <ItemGroup>
+    <ProjectReference Include="..\WindowsChecks\Samples\WpfSample\WpfSample.csproj" ReferenceOutputAssembly="false" OutputItemType="WpfSampleOutput" />
+  </ItemGroup>
+  <Target Name="CopyWpfSample" AfterTargets="ResolveProjectReferences">
+    <Copy SourceFiles="@(WpfSampleOutput)" DestinationFolder="$(OutDir)Samples\WpfSample" SkipUnchangedFiles="true" />
+  </Target>
+
 </Project>
