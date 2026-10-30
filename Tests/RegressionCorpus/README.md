@@ -1,9 +1,9 @@
 # Decompiler regression check
 
 dnSpy decompiles with the upstream ILSpy engine (the `ICSharpCode.Decompiler` package) behind its adapter
-(`Extensions/ILSpy.Decompiler`). Dependabot opens pull requests for new versions of it and of Roslyn
-(`.github/dependabot.yml`; the versions are `ILSpyDecompilerVersion` and `RoslynVersion` in `DnSpyCommon.props`).
-Each pull request runs `.github/workflows/decompiler-regression.yml`:
+(`Extensions/ILSpy.Decompiler`). Dependabot opens pull requests for its new versions (`.github/dependabot.yml`; the
+version is `ILSpyDecompilerVersion` in `DnSpyCommon.props`). Every pull request, including those, runs
+`.github/workflows/decompiler-regression.yml`:
 
 - **Tests** (Windows): builds `dnSpy.sln` (Debug, .NET Framework and .NET) and runs `Tests/dnSpy.Decompiler.ILSpy.Tests`.
   They decompile, check the debug info (breakpoints, stepping), edit and export code and compile and run it, decompile
@@ -24,10 +24,17 @@ Each pull request runs `.github/workflows/decompiler-regression.yml`:
      `System.Collections.Immutable`. Raise `DotNetPackageVersion` in `DnSpyCommon.props`.
    - **API changes** in `ICSharpCode.Decompiler`: fix the adapter (`Extensions/ILSpy.Decompiler/dnSpy.Decompiler.ILSpy.Core`).
      Don't fork or patch the package.
-4. If `BindingRedirectTests` fails, update `dnSpy/dnSpy/app.config` as its message says. A Roslyn update always needs
-   this: the `Microsoft.CodeAnalysis*` redirects go to the new version.
+4. If `BindingRedirectTests` fails, update `dnSpy/dnSpy/app.config` as its message says.
 5. For a bigger release, also run `Tests/WindowsChecks/Run-WindowsChecks.ps1` on Windows (dnSpy's UI, exported sample
    apps that are built and run, BAML from the GAC) and the debugger checklist in `Tests/DebuggerPlayground/README.md`.
+
+## Roslyn
+
+Roslyn isn't updated by Dependabot. dnSpy's debugger compiles expressions with Roslyn's expression evaluator, built
+from source in `dnSpy/Roslyn/Roslyn.ExpressionCompiler` (dnSpyEx's fork, with dnSpy's changes for debugging decompiled
+code). That source has to match the Roslyn version, and dnSpyEx updates the two together, with `app.config`'s
+`Microsoft.CodeAnalysis*` binding redirects. Take Roslyn updates by merging dnSpyEx's master; the same CI runs on that
+pull request.
 
 ## Running it locally
 
