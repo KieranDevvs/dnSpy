@@ -313,6 +313,91 @@ namespace dnSpy.Decompiler.ILSpy.Tests {
 			Assert.DoesNotContain("Connect(", text);
 		}
 
+		/// <summary>
+		/// The solution file of two projects, one x86. .slnx (also with an upper case extension): what the .NET SDK writes
+		/// for the .sln dnSpy writes ('dotnet sln migrate'): the solution's platforms, '/' in paths, the x86 project's
+		/// platform. .sln: Visual Studio 2026's header. The .NET SDK reads both and builds the .slnx.
+		/// </summary>
+		[Theory]
+		[InlineData("Exported.slnx")]
+		[InlineData("Exported.SLNX")]
+		[InlineData("Exported.sln")]
+		public void Solution_SlnAndSlnx(string solutionName) {
+			var directory = Path.Combine(Path.GetTempPath(), "dnspy-export-" + Guid.NewGuid().ToString("N"));
+			var library = TestCompiler.Compile("SlnLib", WithTargetFramework("namespace SlnLib { public static class C { public static int F() => 1; } }")).Load();
+			var x86 = TestCompiler.Compile("SlnX86", WithTargetFramework("namespace SlnX86 { public static class C { public static int F() => 2; } }")).Load();
+			x86.Machine = dnlib.PE.Machine.I386;
+			x86.Is32BitRequired = true;
+			var logger = new Logger();
+			var options = new ProjectCreatorOptions(directory, CancellationToken.None) {
+				Logger = logger,
+				GenerateSDKStyleProjects = true,
+				ProjectVersion = ProjectVersion.VS2026,
+				SolutionFilename = solutionName,
+				CreateDecompilerOutput = writer => new TextWriterDecompilerOutput(writer, new dnSpy.Contracts.Text.Indenter(4, 4, false)),
+			};
+			foreach (var module in new[] { library, x86 })
+				options.ProjectModules.Add(new ProjectModuleOptions(module, LanguageRunner.Create(), new DecompilationContext { AsyncMethodBodyDecompilation = false }));
+			new MSBuildProjectCreator(options).Create();
+			Assert.Empty(logger.Errors);
+			var text = File.ReadAllText(Path.Combine(directory, solutionName));
+			log.WriteLine(text);
+			if (Path.GetExtension(solutionName) == ".sln")
+				Assert.StartsWith("\r\nMicrosoft Visual Studio Solution File, Format Version 12.00\r\n# Visual Studio Version 18\r\nVisualStudioVersion = 18.", text);
+			else {
+				const string expected = """
+					<Solution>
+					  <Configurations>
+					    <Platform Name="Any CPU" />
+					    <Platform Name="Mixed Platforms" />
+					    <Platform Name="x86" />
+					  </Configurations>
+					  <Project Path="SlnLib/SlnLib.csproj" />
+					  <Project Path="SlnX86/SlnX86.csproj">
+					    <Platform Project="x86" />
+					  </Project>
+					</Solution>
+					""";
+				Assert.Equal(XDocument.Parse(expected).ToString(), XDocument.Parse(text).ToString());
+			}
+			var list = RunDotnet(directory, "sln", solutionName, "list");
+			Assert.Contains("SlnLib", list);
+			Assert.Contains("SlnX86", list);
+			if (Path.GetExtension(solutionName) == ".slnx") {
+				// The test programs are compiled against the runtime's System.Private.CoreLib, which the projects then
+				// reference; the SDK references the framework
+				foreach (var projectFile in Directory.GetFiles(directory, "*.csproj", SearchOption.AllDirectories)) {
+					var xml = XDocument.Load(projectFile);
+					xml.Descendants().Where(a => a.Name.LocalName == "Reference" && (string?)a.Attribute("Include") == "System.Private.CoreLib").Remove();
+					xml.Save(projectFile);
+				}
+				RunDotnet(directory, "build", solutionName, "-nologo", "-v:q");
+				// The x86 project was built for its platform
+				Assert.True(Directory.Exists(Path.Combine(directory, "SlnX86", "bin", "x86")), "SlnX86 not built for x86");
+				Assert.False(Directory.Exists(Path.Combine(directory, "SlnLib", "bin", "x86")), "SlnLib built for x86");
+			}
+		}
+
+		string RunDotnet(string directory, params string[] arguments) {
+			var psi = new System.Diagnostics.ProcessStartInfo("dotnet") {
+				WorkingDirectory = directory,
+				RedirectStandardOutput = true,
+				RedirectStandardError = true,
+				UseShellExecute = false,
+			};
+			foreach (var a in arguments)
+				psi.ArgumentList.Add(a);
+			psi.Environment["DOTNET_NOLOGO"] = "1";
+			psi.Environment["DOTNET_CLI_TELEMETRY_OPTOUT"] = "1";
+			using var process = System.Diagnostics.Process.Start(psi)!;
+			var stderr = process.StandardError.ReadToEndAsync();
+			var stdout = process.StandardOutput.ReadToEnd();
+			Assert.True(process.WaitForExit(5 * 60 * 1000), "dotnet " + string.Join(" ", arguments) + " timed out");
+			log.WriteLine($"dotnet {string.Join(" ", arguments)}: {stdout}{stderr.Result}");
+			Assert.True(process.ExitCode == 0, $"dotnet {string.Join(" ", arguments)}: exit code {process.ExitCode}: {stdout}{stderr.Result}");
+			return stdout;
+		}
+
 		const string StyleConnectorProgram = """
 			using System;
 			namespace System.Windows.Markup {

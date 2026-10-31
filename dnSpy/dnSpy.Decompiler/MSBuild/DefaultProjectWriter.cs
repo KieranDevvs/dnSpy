@@ -253,6 +253,7 @@ namespace dnSpy.Decompiler.MSBuild {
 			case ProjectVersion.VS2017: return "15.0";
 			case ProjectVersion.VS2019: return "15.0";
 			case ProjectVersion.VS2022: return "15.0";
+			case ProjectVersion.VS2026: return "15.0";
 			default: throw new InvalidOperationException();
 			}
 		}
